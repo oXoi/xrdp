@@ -78,7 +78,8 @@ in
             libssl-dev \
             libx11-dev \
             libxrandr-dev \
-            libxfixes-dev"
+            libxfixes-dev \
+            libxkbfile-dev"
 
         case "$FEATURE_SET"
         in
@@ -89,13 +90,16 @@ in
                 PACKAGES="$PACKAGES \
                     $PACKAGES_AMD64_MIN \
                     $LIBFREETYPE_DEV \
-                    libfuse-dev \
+                    libfuse3-dev \
                     libjpeg-dev \
                     libmp3lame-dev \
                     libfdk-aac-dev \
+                    libibus-1.0-dev \
                     libimlib2-dev \
                     libopus-dev \
-                    libpixman-1-dev"
+                    libpixman-1-dev \
+                    libx264-dev \
+                    libopenh264-dev"
                 ;;
             *)
                 echo "unsupported feature set: $FEATURE_SET"
@@ -118,6 +122,7 @@ in
             $LIBFREETYPE_DEV:i386 \
             libgl1-mesa-dev:i386 \
             libglu1-mesa-dev:i386 \
+            libibus-1.0-dev:i386 \
             libjpeg-dev:i386 \
             libimlib2-dev:i386 \
             libmp3lame-dev:i386 \
@@ -127,6 +132,7 @@ in
             libx11-dev:i386 \
             libxext-dev:i386 \
             libxfixes-dev:i386 \
+            libxkbfile-dev:i386 \
             libxrandr-dev:i386 \
             libxrender-dev:i386 \
             libsubunit-dev:i386 \

@@ -1,13 +1,9 @@
-if USE_FREETYPE2
-  MKFV1_MAN = xrdp-mkfv1.8
-else
-  MKFV1_MAN =
-endif
-
 man_MANS = \
   xrdp-dis.1 \
+  gfx.toml.5 \
   sesman.ini.5 \
   xrdp.ini.5 \
+  xrdp-km.toml.5 \
   xrdp.8 \
   xrdp-chansrv.8 \
   xrdp-genkeymap.8 \
@@ -15,10 +11,13 @@ man_MANS = \
   xrdp-sesadmin.8 \
   xrdp-sesman.8 \
   xrdp-sesrun.8 \
-  xrdp-dumpfv1.8 \
-  $(MKFV1_MAN)
+  xrdp-dumpfv1.8
 
-EXTRA_DIST = $(man_MANS:=.in)
+EXTRA_DIST = xrdp-mkfv1.8.in $(man_MANS:=.in)
+
+if USE_FREETYPE2
+  man_MANS += xrdp-mkfv1.8
+endif
 
 SUBST_VARS = sed \
    -e 's|@PACKAGE_VERSION[@]|$(PACKAGE_VERSION)|g' \
@@ -26,8 +25,8 @@ SUBST_VARS = sed \
    -e 's|@sbindir[@]|$(sbindir)|g' \
    -e 's|@localstatedir[@]|$(localstatedir)|g' \
    -e 's|@sysconfdir[@]|$(sysconfdir)|g' \
+   -e 's|@sysconfsubdir[@]|$(sysconfsubdir)|g' \
    -e 's|@socketdir[@]|$(socketdir)|g' \
-   -e 's|@sesmanruntimedir[@]|$(sesmanruntimedir)|g' \
    -e 's|@xrdpconfdir[@]|$(sysconfdir)/xrdp|g' \
    -e 's|@xrdpdatadir[@]|$(datadir)/xrdp|g' \
    -e 's|@xrdphomeurl[@]|http://www.xrdp.org/|g'

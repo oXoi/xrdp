@@ -59,6 +59,9 @@ enum scp_msg_code
     E_SCP_LIST_SESSIONS_REQUEST,
     E_SCP_LIST_SESSIONS_RESPONSE,
 
+    E_SCP_CREATE_SOCKDIR_REQUEST,
+    E_SCP_CREATE_SOCKDIR_RESPONSE,
+
     E_SCP_CLOSE_CONNECTION_REQUEST
     // No E_SCP_CLOSE_CONNECTION_RESPONSE
 };
@@ -284,12 +287,14 @@ scp_get_sys_login_request(struct trans *trans,
  * @param login_result What happened to the login
  * @param server_closed If login fails, whether server has closed connection.
  *        If not, a retry can be made.
+ * @param uid UID for a successful login
  * @return != 0 for error
  */
 int
 scp_send_login_response(struct trans *trans,
                         enum scp_login_status login_result,
-                        int server_closed);
+                        int server_closed,
+                        int uid);
 
 /**
  * Parses an incoming E_SCP_LOGIN_RESPONSE (SCP client)
@@ -298,12 +303,17 @@ scp_send_login_response(struct trans *trans,
  * @param[out] login_result 0 for success, PAM error code otherwise
  * @param[out] server_closed If login fails, whether server has closed
  *             connection. If not a retry can be made.
+ * @param[out] uid UID for a successful login
+ *
+ * server_closed and uid can be passed NULL if the caller isn't interested.
+ *
  * @return != 0 for error
  */
 int
 scp_get_login_response(struct trans *trans,
                        enum scp_login_status *login_result,
-                       int *server_closed);
+                       int *server_closed,
+                       int *uid);
 
 /**
  * Send an E_SCP_LOGOUT_REQUEST (SCP client)
@@ -404,7 +414,7 @@ scp_get_create_session_response(struct trans *trans,
                                 struct guid *guid);
 
 /**
- * Send an E_LIST_SESSIONS_REQUEST (SCP client)
+ * Send an E_SCP_LIST_SESSIONS_REQUEST (SCP client)
  *
  * @param trans SCP transport
  * @return != 0 for error
@@ -415,7 +425,7 @@ int
 scp_send_list_sessions_request(struct trans *trans);
 
 /**
- * Send an E_LIST_SESSIONS_RESPONSE (SCP server)
+ * Send an E_SCP_LIST_SESSIONS_RESPONSE (SCP server)
  *
  * @param trans SCP transport
  * @param status Status of request
@@ -429,7 +439,7 @@ scp_send_list_sessions_response(
     const struct scp_session_info *info);
 
 /**
- * Parse an incoming E_LIST_SESSIONS_RESPONSE (SCP client)
+ * Parse an incoming E_SCP_LIST_SESSIONS_RESPONSE (SCP client)
  *
  * @param trans SCP transport
  * @param[out] status Status of request
@@ -448,6 +458,43 @@ scp_get_list_sessions_response(
     struct trans *trans,
     enum scp_list_sessions_status *status,
     struct scp_session_info **info);
+
+/**
+ * Send an E_SCP_CREATE_SOCKDIR_REQUEST (SCP client)
+ *
+ * @param trans SCP transport
+ * @return != 0 for error
+ *
+ * In some configurations, chansrv is not started by sesman. In this
+ * instance, it may be necessary for the unprivileged sesman process to
+ * ask sesman to create the sockets dir so sesman can populate it.
+ *
+ * Server replies with E_SCP_CREATE_SOCKDIR_RESPONSE
+ */
+int
+scp_send_create_sockdir_request(struct trans *trans);
+
+/**
+ * Send an E_SCP_CREATE_SOCKDIR_RESPONSE (SCP server)
+ *
+ * @param trans SCP transport
+ * @param status Status of request
+ * @return != 0 for error
+ */
+int
+scp_send_create_sockdir_response(struct trans *trans,
+                                 enum scp_create_sockdir_status status);
+
+/**
+ * Parse an incoming E_SCP_CREATE_SOCKDIR_RESPONSE (SCP client)
+ *
+ * @param trans SCP transport
+ * @param[out] status Status of request
+ * @return != 0 for error
+ */
+int
+scp_get_create_sockdir_response(struct trans *trans,
+                                enum scp_create_sockdir_status *status);
 
 /**
  * Send an E_CLOSE_CONNECTION_REQUEST (SCP client)

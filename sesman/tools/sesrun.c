@@ -40,7 +40,8 @@
 #include "string_calls.h"
 #include "guid.h"
 
-#include "tools_common.h"
+#include "scp.h"
+#include "scp_sync.h"
 
 // cppcheck doesn't always set this macro to something in double-quotes
 #if defined(__cppcheck__)
@@ -68,8 +69,8 @@
 #   define DEFAULT_BPP 32
 #endif
 
-#ifndef DEFAULT_TYPE
-#   define DEFAULT_TYPE "Xorg"
+#ifndef DEFAULT_SESSION_TYPE
+#   define DEFAULT_SESSION_TYPE "Xorg"
 #endif
 
 /**
@@ -176,7 +177,7 @@ usage(void)
     g_printf("    -g <geometry>         Default:%dx%d\n",
              DEFAULT_WIDTH, DEFAULT_HEIGHT);
     g_printf("    -b <bits-per-pixel>   Default:%d\n", DEFAULT_BPP);
-    g_printf("    -t <type>             Default:%s\n", DEFAULT_TYPE);
+    g_printf("    -t <type>             Default:%s\n", DEFAULT_SESSION_TYPE);
     g_printf("    -D <directory>        Default: $HOME\n"
              "    -S <shell>            Default: Defined window manager\n"
              "    -p <password>         TESTING ONLY - DO NOT USE IN PRODUCTION\n"
@@ -290,7 +291,7 @@ parse_program_args(int argc, char *argv[], struct session_params *sp,
     sp->width = DEFAULT_WIDTH;
     sp->height = DEFAULT_HEIGHT;
     sp->bpp = DEFAULT_BPP;
-    (void)string_to_session_type(DEFAULT_TYPE, &sp->session_type);
+    (void)string_to_session_type(DEFAULT_SESSION_TYPE, &sp->session_type);
 
     sp->directory = "";
     sp->shell = "";
@@ -453,14 +454,14 @@ handle_login_response(struct trans *t, int *server_closed)
 {
     enum scp_login_status login_result;
 
-    int rv = wait_for_sesman_reply(t, E_SCP_LOGIN_RESPONSE);
+    int rv = scp_sync_wait_specific(t, E_SCP_LOGIN_RESPONSE);
     if (rv != 0)
     {
         *server_closed = 1;
     }
     else
     {
-        rv = scp_get_login_response(t, &login_result, server_closed);
+        rv = scp_get_login_response(t, &login_result, server_closed, NULL);
         if (rv == 0)
         {
             if (login_result != E_SCP_LOGIN_OK)
@@ -511,7 +512,7 @@ handle_create_session_response(struct trans *t)
     int display;
     struct guid guid;
 
-    int rv = wait_for_sesman_reply(t, E_SCP_CREATE_SESSION_RESPONSE);
+    int rv = scp_sync_wait_specific(t, E_SCP_CREATE_SESSION_RESPONSE);
     if (rv == 0)
     {
         rv = scp_get_create_session_response(t, &status,
