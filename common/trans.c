@@ -38,7 +38,7 @@
 #define CONNECT_DELAY_ON_FAIL_MS 2000
 
 /*****************************************************************************/
-int
+static int
 trans_tls_recv(struct trans *self, char *ptr, int len)
 {
     if (self->tls == NULL)
@@ -49,7 +49,7 @@ trans_tls_recv(struct trans *self, char *ptr, int len)
 }
 
 /*****************************************************************************/
-int
+static int
 trans_tls_send(struct trans *self, const char *data, int len)
 {
     if (self->tls == NULL)
@@ -60,7 +60,7 @@ trans_tls_send(struct trans *self, const char *data, int len)
 }
 
 /*****************************************************************************/
-int
+static int
 trans_tls_can_recv(struct trans *self, int sck, int millis)
 {
     if (self->tls == NULL)
@@ -71,21 +71,21 @@ trans_tls_can_recv(struct trans *self, int sck, int millis)
 }
 
 /*****************************************************************************/
-int
+static int
 trans_tcp_recv(struct trans *self, char *ptr, int len)
 {
     return g_tcp_recv(self->sck, ptr, len, 0);
 }
 
 /*****************************************************************************/
-int
+static int
 trans_tcp_send(struct trans *self, const char *data, int len)
 {
     return g_tcp_send(self->sck, data, len, 0);
 }
 
 /*****************************************************************************/
-int
+static int
 trans_tcp_can_recv(struct trans *self, int sck, int millis)
 {
     return g_sck_can_recv(sck, millis);
@@ -235,7 +235,7 @@ trans_get_wait_objs_rw(struct trans *self, tbus *robjs, int *rcount,
 }
 
 /*****************************************************************************/
-int
+static int
 trans_send_waiting(struct trans *self, int block)
 {
     struct stream *temp_s;
@@ -696,7 +696,7 @@ local_connect_shim(int fd, const char *server, const char *port)
 /**************************************************************************//**
  * Waits for an asynchronous connect to complete.
  * @param self - Transport object
- * @param start_time Start time of connect (from g_time3())
+ * @param start_time Start time of connect (from g_get_elapsed_ms())
  * @param timeout Total wait timeout
  * @return 0 - connect succeeded, 1 - Connect failed
  *
@@ -704,10 +704,10 @@ local_connect_shim(int fd, const char *server, const char *port)
  * on a regular basis.
  */
 static int
-poll_for_async_connect(struct trans *self, int start_time, int timeout)
+poll_for_async_connect(struct trans *self, unsigned int start_time, int timeout)
 {
     int rv = 1;
-    int ms_remaining = timeout - (g_time3() - start_time);
+    int ms_remaining = timeout - (int)(g_get_elapsed_ms() - start_time);
 
     while (ms_remaining > 0)
     {
@@ -736,7 +736,7 @@ poll_for_async_connect(struct trans *self, int start_time, int timeout)
             break;
         }
 
-        ms_remaining = timeout - (g_time3() - start_time);
+        ms_remaining = timeout - (int)(g_get_elapsed_ms() - start_time);
     }
     return rv;
 }
@@ -747,7 +747,7 @@ int
 trans_connect(struct trans *self, const char *server, const char *port,
               int timeout)
 {
-    int start_time = g_time3();
+    unsigned int start_time = g_get_elapsed_ms();
     int error;
     int ms_before_next_connect;
 
@@ -826,7 +826,7 @@ trans_connect(struct trans *self, const char *server, const char *port,
         }
 
         /* Have we reached the total timeout yet? */
-        int ms_left = timeout - (g_time3() - start_time);
+        int ms_left = timeout - (int)(g_get_elapsed_ms() - start_time);
         if (ms_left <= 0)
         {
             error = 1;

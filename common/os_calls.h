@@ -23,16 +23,16 @@
 
 #include "arch.h"
 
-enum exit_reason
+enum proc_exit_reason
 {
-    E_XR_STATUS_CODE = 0, ///< 'val' contains exit status
-    E_XR_SIGNAL, ///< 'val' contains a signal number
-    E_XR_UNEXPECTED
+    E_PXR_STATUS_CODE = 0, ///< 'val' contains exit status
+    E_PXR_SIGNAL, ///< 'val' contains a signal number
+    E_PXR_UNEXPECTED
 };
 
-struct exit_status
+struct proc_exit_status
 {
-    enum exit_reason reason;
+    enum proc_exit_reason reason;
     int val;
 };
 
@@ -53,7 +53,6 @@ struct list;
 #define g_close_wait_obj g_delete_wait_obj
 
 int      g_rm_temp_dir(void);
-int      g_mk_socket_path(void);
 void     g_init(const char *app_name);
 void     g_deinit(void);
 void g_printf(const char *format, ...) printflike(1, 2);
@@ -176,6 +175,14 @@ g_sck_get_peer_ip_address(int sck,
 const char *
 g_sck_get_peer_description(int sck,
                            char *desc, unsigned int bytes);
+/**
+ * Sleep for the specified number of milli-seconds
+ * @param msecs Milli-seconds
+ *
+ * If a signal is processed, it is possible that this call will
+ * sleep for less than the specified number of milli-seconds. This
+ * is platform-specific
+ */
 void     g_sleep(int msecs);
 int      g_pipe(int fd[2]);
 
@@ -196,10 +203,13 @@ int      g_delete_wait_obj(tintptr obj);
  * @param rcount Number of elements in read_objs
  * @param write_objs Array of write objects
  * @param rcount Number of elements in write_objs
- * @param mstimeout Timeout in milliseconds. <= 0 means an infinite timeout.
+ * @param mstimeout Timeout in milliseconds. < 0 means an infinite timeout.
  *
  * @return 0 for success. The objects will need to be polled to
  * find out what is readable or writeable.
+ *
+ * An mstimeout of zero will return immediately, although
+ * error conditions may be checked for.
  */
 int      g_obj_wait(tintptr *read_objs, int rcount, tintptr *write_objs,
                     int wcount, int mstimeout);
@@ -275,16 +285,60 @@ int      g_execvp(const char *p1, char *args[]);
  */
 int      g_execvp_list(const char *file, struct list *argv);
 int      g_execlp3(const char *a1, const char *a2, const char *a3);
+/**
+ * Set an alarm using SIGALRM
+ * @param func Signal handler, or NULL to cancel an alarm
+ * @param secs Number of seconds until an alarm is raised
+ * @return Number of seconds remaining before a previously requested
+ *         alarm is raised
+ */
 unsigned int g_set_alarm(void (*func)(int), unsigned int secs);
+/**
+ * Set a handler up for SIGCHLD
+ * @param func signal handler, or NULL to restore the default handler
+ * The handler remains in place until explicitly replaced.
+ */
 void     g_signal_child_stop(void (*func)(int));
+/**
+ * Set a handler up for SIGSEGV
+ * @param func signal handler, or NULL to restore the default handler
+ * The handler can only be called once, at which point the
+ * default handler is restored. This is to avoid infinite loops
+ */
 void     g_signal_segfault(void (*func)(int));
+/**
+ * Set a handler up for SIGHUP
+ * @param func signal handler, or NULL to restore the default handler
+ * The handler remains in place until explicitly replaced.
+ */
 void     g_signal_hang_up(void (*func)(int));
+/**
+ * Set a handler up for SIGINT
+ * @param func signal handler, or NULL to restore the default handler
+ * The handler remains in place until explicitly replaced.
+ */
 void     g_signal_user_interrupt(void (*func)(int));
+/**
+ * Set a handler up for SIGTERM
+ * @param func signal handler, or NULL to restore the default handler
+ * The handler remains in place until explicitly replaced.
+ */
 void     g_signal_terminate(void (*func)(int));
+/**
+ * Set a handler up for SIGPIPE
+ * @param func signal handler, or NULL to restore the default handler
+ * The handler remains in place until explicitly replaced.
+ */
 void     g_signal_pipe(void (*func)(int));
+/**
+ * Set a handler up for SIGUSR1
+ * @param func signal handler, or NULL to restore the default handler
+ * The handler remains in place until explicitly replaced.
+ */
 void     g_signal_usr1(void (*func)(int));
 int      g_fork(void);
 int      g_setgid(int pid);
+int      g_drop_privileges(const char *user, const char *group);
 int      g_initgroups(const char *user);
 int      g_getuid(void);
 int      g_getgid(void);
@@ -299,9 +353,9 @@ int      g_setlogin(const char *name);
  */
 int      g_set_allusercontext(int uid);
 #endif
-int      g_waitchild(struct exit_status *e);
+int      g_waitchild(struct proc_exit_status *e);
 int      g_waitpid(int pid);
-struct exit_status g_waitpid_status(int pid);
+struct proc_exit_status g_waitpid_status(int pid);
 /*
  * Sets the process group ID of the indicated process to the specified value.
  * (POSIX.1)
@@ -318,15 +372,47 @@ int      g_exit(int exit_code);
 int      g_getpid(void);
 int      g_sigterm(int pid);
 int      g_sighup(int pid);
+/*
+ * Is a particular PID active?
+ * @param pid PID to check
+ * Returns boolean
+ */
+int      g_pid_is_active(int pid);
 int      g_getuser_info_by_name(const char *username, int *uid, int *gid,
                                 char **shell, char **dir, char **gecos);
 int      g_getuser_info_by_uid(int uid, char **username, int *gid,
                                char **shell, char **dir, char **gecos);
 int      g_getgroup_info(const char *groupname, int *gid);
+/**
+ * Checks whether a user is in the specified group
+ * @param username Name of user
+ * @param gid GID of group
+ * @param[out] ok Whether user is in group
+ * @return Non-zero if a system error occurred. In this instance OK is not set
+ *
+ * Primary group of username is also checked
+ */
 int      g_check_user_in_group(const char *username, int gid, int *ok);
-int      g_time1(void);
-int      g_time2(void);
-int      g_time3(void);
+
+/**
+ * Gets elapsed milliseconds since some arbitrary point in the past
+ *
+ * The returned value is unaffected by leap-seconds or time zone changes.
+ *
+ * @return elaped ms since some arbitrary point
+ *
+ * Calculate the duration of a task by calling this routine before and
+ * after the task, and subtracting the two values.
+ *
+ * The value wraps every so often (every 49.7 days on a 32-bit system),
+ * but as we are using unsigned arithmetic, the difference of any of these
+ * two values can be used to calculate elapsed time, whether-or-not a wrap
+ * occurs during the interval - provided of course the time being measured
+ * is less than the total wrap-around interval.
+ */
+unsigned int
+g_get_elapsed_ms(void);
+
 int      g_save_to_bmp(const char *filename, char *data, int stride_bytes,
                        int width, int height, int depth, int bits_per_pixel);
 void    *g_shmat(int shmid);
@@ -338,6 +424,9 @@ int      g_tcp4_bind_address(int sck, const char *port, const char *address);
 int      g_tcp6_socket(void);
 int      g_tcp6_bind_address(int sck, const char *port, const char *address);
 int      g_no_new_privs(void);
+void
+g_qsort(void *base, size_t nitems, size_t size,
+        int (*compar)(const void *, const void *));
 
 /* glib-style wrappers */
 #define g_new(struct_type, n_structs) \

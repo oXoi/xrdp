@@ -27,6 +27,12 @@ port=3389
 ; prefer use vsock://<cid>:<port> above
 use_vsock=false
 
+; Unprivileged User name and group to run the xrdp daemon.
+; It is HIGHLY RECOMMENDED you set these values. See the xrdp.ini(5)
+; manpage for more information on setting and checking these.
+#runtime_user=xrdp
+#runtime_group=xrdp
+
 ; regulate if the listening socket use socket option tcp_nodelay
 ; no buffering will be performed in the TCP stack
 tcp_nodelay=true
@@ -35,7 +41,10 @@ tcp_nodelay=true
 ; if the network connection disappear without close messages the connection will be closed
 tcp_keepalive=true
 
-; set tcp send/recv buffer (for experts)
+; set tcp send/recv buffer
+; These parameters are largely historic. On systems with dynamic TCP
+; buffer sizes, setting them manually will either impact performance or
+; waste memory
 #tcp_send_buffer_bytes=32768
 #tcp_recv_buffer_bytes=32768
 
@@ -85,7 +94,8 @@ max_bpp=32
 new_cursors=true
 ; fastpath - can be 'input', 'output', 'both', 'none'
 use_fastpath=both
-; when true, userid/password *must* be passed on cmd line
+; when true, userid/password *must* be passed on cmd line. If the password
+; is incorrect, the login will fail
 #require_credentials=true
 ; when true, the userid will be used to try to authenticate
 #enable_token_login=true
@@ -219,7 +229,6 @@ drdynvc=true
 cliprdr=true
 rail=true
 xrdpvr=true
-tcutils=true
 
 ; for debugging xrdp, in section xrdp1, change port=-1 to this:
 #port=/tmp/.xrdp/xrdp_display_10
@@ -239,6 +248,11 @@ username=ask
 password=ask
 port=-1
 code=20
+#keycode_set=evdev
+; Frame capture interval (milliseconds)
+h264_frame_interval=16
+rfx_frame_interval=32
+normal_frame_interval=40
 
 [Xvnc]
 name=Xvnc
@@ -252,10 +266,6 @@ port=-1
 ; Disable requested encodings to support buggy VNC servers
 ; (1 = ExtendedDesktopSize)
 #disabled_encodings_mask=0
-; Use this to connect to a chansrv instance created outside of sesman
-; (e.g. as part of an x11vnc console session). Replace '0' with the
-; display number of the session
-#chansrvport=DISPLAY(0)
 
 ; Generic VNC Proxy
 ; Tailor this to specific hosts and VNC instances by specifying an ip
@@ -270,6 +280,15 @@ password=ask
 #pamusername=asksame
 #pampassword=asksame
 #delay_ms=2000
+; Use one of these to connect to a chansrv instance created outside of sesman
+; (e.g. as part of an x11vnc console session). Replace 'n' with the
+; display number of the session, and (if applicable) 'u' with the numeric
+; UID of the session.
+;
+; If 'username' or 'pamusername' is set, you probably don't need to use
+; the two parameter variant with 'u'.
+#chansrvport=DISPLAY(n)
+#chansrvport=DISPLAY(n,u)
 
 ; Generic RDP proxy using NeutrinoRDP
 ; Tailor this to specific hosts by specifying an ip and port and setting

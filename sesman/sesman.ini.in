@@ -44,6 +44,12 @@ RestrictInboundClipboard=none
 ; however, interfere with the use of security modules such as AppArmor.
 ; Leave this unset unless you need to disable it.
 #XorgNoNewPrivileges=true
+; Specify the group which is to have read access to the directory where
+; local sockets for the session are created.
+; This MUST be the same as runtime_group in xrdp.ini, or xrdp will not
+; be able to connect to your sessions.
+#SessionSockdirGroup=xrdp
+
 
 [Sessions]
 ;; X11DisplayOffset - x11 display number offset
@@ -99,6 +105,9 @@ IdleTimeLimit=0
 ;      I        Sessions are separated by IP address
 ;
 ;   The options U and B are always active, and cannot be de-selected.
+;
+;   The "" in the text above are for readability. Do not include them in
+;   the string
 Policy=Default
 
 [Logging]
@@ -159,11 +168,16 @@ param=96
 #FuseMountName=/run/user/%u/thinclient_drives
 #FuseMountName=/media/thinclient_drives/%U/thinclient_drives
 FuseMountName=thinclient_drives
+#FuseMountNameColonCharReplacement=
 ; this value allows only the user to access their own mapped drives.
 ; Make this more permissive (e.g. 022) if required.
 FileUmask=077
 ; Can be used to disable FUSE functionality - see sesman.ini(5)
 #EnableFuseMount=false
+; Can be used to enable direct I/O to FUSE open file calls. This is useful
+; when open file handles need to immediately see changes made on the client
+; side. There is a performance hit, so use with caution.
+#FuseDirectIO=true
 ; Uncomment this line only if you are using GNOME 3 versions 3.29.92
 ; and up, and you wish to cut-paste files between Nautilus and Windows. Do
 ; not use this setting for GNOME 4, or other file managers
@@ -191,6 +205,11 @@ EnableSyslog=true
 #EnableConsole=false
 #ConsoleLevel=INFO
 #EnableProcessId=false
+; Log file path
+; Set this to move the log file away from its default location. You may want
+; to do this for (e.g.) NFS-mounted home directories
+; See sesman.ini(5) for the format of this parameter
+#LogFilePath=/run/user/%u/xrdp
 
 [ChansrvLoggingPerLogger]
 ; Note: per logger configuration is only used if xrdp is built with
