@@ -47,6 +47,7 @@
 #include "login_info.h"
 #include "os_calls.h"
 #include "sesexec.h"
+#include "sessionrecord.h"
 #include "string_calls.h"
 #include "xauth.h"
 #include "xwait.h"
@@ -154,7 +155,7 @@ session_data_free(struct session_data *session_data)
  * @param len the allocated len for outstr
  * @return
  */
-char *
+static char *
 dumpItemsToString(struct list *self, char *outstr, int len)
 {
     int index;
@@ -370,8 +371,6 @@ prepare_xorg_xserver_params(const struct session_parameters *s,
         g_snprintf(text, sizeof(text), "%d", g_cfg->sess.kill_disconnected);
         g_setenv("XRDP_SESMAN_KILL_DISCONNECTED", text, 1);
 
-        g_setenv("XRDP_SOCKET_PATH", XRDP_SOCKET_PATH, 1);
-
         /* get path of Xorg from config */
         xserver = (const char *)list_get_item(g_cfg->xorg_params, 0);
 
@@ -496,9 +495,6 @@ start_x_server(struct login_info *login_info,
                 unknown_session_type = 1;
         }
 
-        g_free(passwd_file);
-        passwd_file = NULL;
-
         if (xserver_params == NULL)
         {
             LOG(LOG_LEVEL_ERROR, "Out of memory allocating X server params");
@@ -521,6 +517,7 @@ start_x_server(struct login_info *login_info,
     }
 
     /* should not get here */
+    g_free(passwd_file);
     list_delete(xserver_params);
     LOG(LOG_LEVEL_ERROR, "A fatal error has occurred attempting "
         "to start the X server on display %u, aborting connection",
@@ -558,7 +555,7 @@ fork_child(
 }
 
 /******************************************************************************/
-enum scp_screate_status
+static enum scp_screate_status
 session_start_wrapped(struct login_info *login_info,
                       const struct session_parameters *s,
                       struct session_data *sd)
@@ -658,6 +655,7 @@ session_start_wrapped(struct login_info *login_info,
             }
             else
             {
+                utmp_login(window_manager_pid, s->display, login_info);
                 LOG(LOG_LEVEL_INFO,
                     "Starting the xrdp channel server for display :%d",
                     s->display);
@@ -674,7 +672,7 @@ session_start_wrapped(struct login_info *login_info,
                 sd->win_mgr = window_manager_pid;
                 sd->x_server = display_pid;
                 sd->chansrv = chansrv_pid;
-                sd->start_time = g_time1();
+                sd->start_time = time(NULL);
                 status = E_SCP_SCREATE_OK;
             }
         }
@@ -716,15 +714,14 @@ session_start(struct login_info *login_info,
 
 /******************************************************************************/
 static int
-cleanup_sockets(int display)
+cleanup_sockets(int uid, int display)
 {
-    LOG(LOG_LEVEL_INFO, "cleanup_sockets:");
-    char file[256];
-    int error;
+    LOG_DEVEL(LOG_LEVEL_INFO, "cleanup_sockets:");
 
-    error = 0;
+    char file[XRDP_SOCKETS_MAXPATH];
+    int error = 0;
 
-    g_snprintf(file, 255, CHANSRV_PORT_OUT_STR, display);
+    g_snprintf(file, sizeof(file), CHANSRV_PORT_OUT_STR, uid, display);
     if (g_file_exist(file))
     {
         LOG(LOG_LEVEL_DEBUG, "cleanup_sockets: deleting %s", file);
@@ -737,7 +734,7 @@ cleanup_sockets(int display)
         }
     }
 
-    g_snprintf(file, 255, CHANSRV_PORT_IN_STR, display);
+    g_snprintf(file, sizeof(file), CHANSRV_PORT_IN_STR, uid, display);
     if (g_file_exist(file))
     {
         LOG(LOG_LEVEL_DEBUG, "cleanup_sockets: deleting %s", file);
@@ -750,7 +747,7 @@ cleanup_sockets(int display)
         }
     }
 
-    g_snprintf(file, 255, XRDP_CHANSRV_STR, display);
+    g_snprintf(file, sizeof(file), XRDP_CHANSRV_STR, uid, display);
     if (g_file_exist(file))
     {
         LOG(LOG_LEVEL_DEBUG, "cleanup_sockets: deleting %s", file);
@@ -763,7 +760,7 @@ cleanup_sockets(int display)
         }
     }
 
-    g_snprintf(file, 255, CHANSRV_API_STR, display);
+    g_snprintf(file, sizeof(file), CHANSRV_API_STR, uid, display);
     if (g_file_exist(file))
     {
         LOG(LOG_LEVEL_DEBUG, "cleanup_sockets: deleting %s", file);
@@ -779,7 +776,7 @@ cleanup_sockets(int display)
     /* the following files should be deleted by xorgxrdp
      * but just in case the deletion failed */
 
-    g_snprintf(file, 255, XRDP_X11RDP_STR, display);
+    g_snprintf(file, sizeof(file), XRDP_X11RDP_STR, uid, display);
     if (g_file_exist(file))
     {
         LOG(LOG_LEVEL_DEBUG, "cleanup_sockets: deleting %s", file);
@@ -792,7 +789,7 @@ cleanup_sockets(int display)
         }
     }
 
-    g_snprintf(file, 255, XRDP_DISCONNECT_STR, display);
+    g_snprintf(file, sizeof(file), XRDP_DISCONNECT_STR, uid, display);
     if (g_file_exist(file))
     {
         LOG(LOG_LEVEL_DEBUG, "cleanup_sockets: deleting %s", file);
@@ -810,11 +807,11 @@ cleanup_sockets(int display)
 
 /******************************************************************************/
 static void
-exit_status_to_str(const struct exit_status *e, char buff[], int bufflen)
+exit_status_to_str(const struct proc_exit_status *e, char buff[], int bufflen)
 {
     switch (e->reason)
     {
-        case E_XR_STATUS_CODE:
+        case E_PXR_STATUS_CODE:
             if (e->val == 0)
             {
                 g_snprintf(buff, bufflen, "exit code zero");
@@ -825,7 +822,7 @@ exit_status_to_str(const struct exit_status *e, char buff[], int bufflen)
             }
             break;
 
-        case E_XR_SIGNAL:
+        case E_PXR_SIGNAL:
         {
             char sigstr[MAXSTRSIGLEN];
             g_snprintf(buff, bufflen, "signal %s",
@@ -843,7 +840,7 @@ exit_status_to_str(const struct exit_status *e, char buff[], int bufflen)
 void
 session_process_child_exit(struct session_data *sd,
                            int pid,
-                           const struct exit_status *e)
+                           const struct proc_exit_status *e)
 {
     if (pid == sd->x_server)
     {
@@ -861,9 +858,9 @@ session_process_child_exit(struct session_data *sd,
     }
     else if (pid == sd->win_mgr)
     {
-        int wm_wait_time = g_time1() - sd->start_time;
+        int wm_wait_time = time(NULL) - sd->start_time;
 
-        if (e->reason == E_XR_STATUS_CODE && e->val == 0)
+        if (e->reason == E_PXR_STATUS_CODE && e->val == 0)
         {
             LOG(LOG_LEVEL_INFO,
                 "Window manager (pid %d, display %d) "
@@ -889,6 +886,7 @@ session_process_child_exit(struct session_data *sd,
                 sd->win_mgr, sd->params.display, wm_wait_time);
         }
 
+        utmp_logout(sd->win_mgr, sd->params.display, e);
         sd->win_mgr = -1;
 
         if (sd->x_server > 0)
@@ -908,7 +906,7 @@ session_process_child_exit(struct session_data *sd,
 
     if (!session_active(sd))
     {
-        cleanup_sockets(sd->params.display);
+        cleanup_sockets(g_login_info->uid, sd->params.display);
     }
 }
 

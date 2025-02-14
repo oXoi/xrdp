@@ -63,9 +63,6 @@
 #define XRDP_MAX_BITMAP_CACHE_IDX 2000
 #define XRDP_BITMAP_CACHE_ENTRIES 2048
 
-#define XR_MIN_KEY_CODE 8
-#define XR_MAX_KEY_CODE 256
-
 /*
  * Constants come from ITU-T Recommendations
  */
@@ -85,6 +82,11 @@
 #define MCS_CJCF                       15 /* Channel Join Confirm */
 #define MCS_SDRQ                       25 /* Send Data Request */
 #define MCS_SDIN                       26 /* Send Data Indication */
+
+/* xorgxrdp: frame capture interval (milliseconds) */
+#define DEFAULT_RFX_FRAME_INTERVAL     32
+#define DEFAULT_H264_FRAME_INTERVAL    16
+#define DEFAULT_NORMAL_FRAME_INTERVAL  40
 
 /******************************************************************************
  *
@@ -257,6 +259,7 @@
 #define WM_PAINT       3
 #define WM_KEYDOWN     15
 #define WM_KEYUP       16
+#define WM_KEYBRD_SYNC 17
 #define WM_MOUSEMOVE   100
 #define WM_LBUTTONUP   101
 #define WM_LBUTTONDOWN 102
@@ -281,12 +284,56 @@
 #define WM_TOUCH_HSCROLL 141
 
 #define WM_INVALIDATE  200
+#define WM_CHANNEL_DATA 201
 
 #define CB_ITEMCHANGE  300
 
 #define FASTPATH_MAX_PACKET_SIZE    0x3fff
 
-#define XR_RDP_SCAN_LSHIFT 42
-#define XR_RDP_SCAN_ALT    56
+// Since we're not guaranteed to have pixman, copy these directives.
+#define XRDP_PIXMAN_TYPE_ARGB   2
+#define XRDP_PIXMAN_TYPE_ABGR   3
+#define XRDP_PIXMAN_FORMAT(bpp,type,a,r,g,b)    (((bpp) << 24) |  \
+        ((type) << 16) | \
+        ((a) << 12) |    \
+        ((r) << 8) |     \
+        ((g) << 4) |     \
+        ((b)))
+
+#define XRDP_a8b8g8r8 \
+    XRDP_PIXMAN_FORMAT(32, XRDP_PIXMAN_TYPE_ABGR, 8, 8, 8, 8)
+
+#define XRDP_a8r8g8b8 \
+    XRDP_PIXMAN_FORMAT(32, XRDP_PIXMAN_TYPE_ARGB, 8, 8, 8, 8)
+
+#define XRDP_r5g6b5 \
+    XRDP_PIXMAN_FORMAT(16, XRDP_PIXMAN_TYPE_ARGB, 0, 5, 6, 5)
+
+#define XRDP_a1r5g5b5 \
+    XRDP_PIXMAN_FORMAT(16, XRDP_PIXMAN_TYPE_ARGB, 1, 5, 5, 5)
+
+#define XRDP_r3g3b2 \
+    XRDP_PIXMAN_FORMAT(8, XRDP_PIXMAN_TYPE_ARGB, 0, 3, 3, 2)
+
+// The last used constant in pixman is 63, so use 64+
+#define XRDP_nv12 \
+    XRDP_PIXMAN_FORMAT(12, 64, 0, 0, 0, 0)
+
+#define XRDP_i420 \
+    XRDP_PIXMAN_FORMAT(12, 65, 0, 0, 0, 0)
+
+#define XRDP_nv12_709fr \
+    XRDP_PIXMAN_FORMAT(12, 66, 0, 0, 0, 0)
+
+#define XRDP_yuv444_709fr \
+    XRDP_PIXMAN_FORMAT(32, 67, 0, 0, 0, 0)
+
+// https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/8131c1bc-1af8-4907-a05a-f72f4581160f
+#define XRDP_yuv444_v1_stream_709fr \
+    XRDP_PIXMAN_FORMAT(32, 68, 0, 0, 0, 0)
+
+// https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegfx/781406c3-5e24-4f2b-b6ff-42b76bf64f6d
+#define XRDP_yuv444_v2_stream_709fr \
+    XRDP_PIXMAN_FORMAT(32, 69, 0, 0, 0, 0)
 
 #endif

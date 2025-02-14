@@ -1,6 +1,6 @@
 
 AM_CPPFLAGS = \
-  -DSESMAN_RUNTIME_PATH=\"${sesmanruntimedir}\" \
+  -DXRDP_SOCKET_ROOT_PATH=\"${socketdir}\" \
   -I$(top_srcdir)/common
 
 module_LTLIBRARIES = \
@@ -19,6 +19,8 @@ libipm_la_SOURCES = \
   ercp.c \
   scp.h \
   scp.c \
+  scp_sync.h \
+  scp_sync.c \
   scp_application_types.h \
   scp_application_types.c
 

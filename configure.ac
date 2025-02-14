@@ -1,13 +1,14 @@
 # Process this file with autoconf to produce a configure script
 
 AC_PREREQ([2.69])
-AC_INIT([xrdp], [0.9.80], [xrdp-devel@googlegroups.com])
+AC_INIT([xrdp], [0.10.80], [xrdp-devel@googlegroups.com])
+AC_DEFINE([VERSION_YEAR], 2025, [Copyright year])
 AC_CONFIG_HEADERS(config_ac.h:config_ac-h.in)
 AM_INIT_AUTOMAKE([1.7.2 foreign])
 AC_CONFIG_MACRO_DIR([m4])
+AC_USE_SYSTEM_EXTENSIONS
 AC_PROG_CC
 AC_PROG_CXX
-AC_C_CONST
 LT_INIT
 
 PKG_PROG_PKG_CONFIG
@@ -61,12 +62,6 @@ AC_ARG_WITH([socketdir],
                   [Use directory for UNIX sockets for XRDP sessions (default: RUNSTATEDIR/xrdp)])],
                   [], [with_socketdir="$runstatedir/xrdp"])
 AC_SUBST([socketdir], [$with_socketdir])
-
-AC_ARG_WITH([sesmanruntimedir],
-  [AS_HELP_STRING([--with-sesmanruntimedir=DIR],
-                  [Use directory for sesman runtime data (default: RUNSTATEDIR/xrdp-sesman)])],
-                  [], [with_sesmanruntimedir="$runstatedir/xrdp-sesman"])
-AC_SUBST([sesmanruntimedir], [$with_sesmanruntimedir])
 
 AC_ARG_WITH([systemdsystemunitdir],
         AS_HELP_STRING([--with-systemdsystemunitdir=DIR], [Directory for systemd service files, no to disable]),
@@ -168,11 +163,22 @@ AC_ARG_ENABLE(mp3lame, AS_HELP_STRING([--enable-mp3lame],
               [Build lame mp3(audio codec) (default: no)]),
               [], [enable_mp3lame=no])
 AM_CONDITIONAL(XRDP_MP3LAME, [test x$enable_mp3lame = xyes])
+AC_ARG_ENABLE(ibus, AS_HELP_STRING([--enable-ibus],
+              [Allow unicode input via IBus) (default: no)]),
+              [], [enable_ibus=no])
+AM_CONDITIONAL(XRDP_IBUS, [test x$enable_ibus = xyes])
 AC_ARG_ENABLE(pixman, AS_HELP_STRING([--enable-pixman],
               [Use pixman library (default: no)]),
               [], [enable_pixman=no])
 AM_CONDITIONAL(XRDP_PIXMAN, [test x$enable_pixman = xyes])
-
+AC_ARG_ENABLE(x264, AS_HELP_STRING([--enable-x264],
+              [Use x264 library (default: no)]),
+              [], [enable_x264=no])
+AM_CONDITIONAL(XRDP_X264, [test x$enable_x264 = xyes])
+AC_ARG_ENABLE(openh264, AS_HELP_STRING([--enable-openh264],
+              [Use Cisco OpenH264 library (default: no)]),
+              [], [enable_openh264=no])
+AM_CONDITIONAL(XRDP_OPENH264, [test x$enable_openh264 = xyes])
 AC_ARG_ENABLE(painter, AS_HELP_STRING([--disable-painter],
               [Do not use included painter library (default: no)]),
               [], [enable_painter=yes])
@@ -187,6 +193,11 @@ AC_ARG_ENABLE(rdpsndaudin, AS_HELP_STRING([--enable-rdpsndaudin],
               [Use rdpsnd audio in (default: no)]),
               [], [enable_rdpsndaudin=no])
 AM_CONDITIONAL(XRDP_RDPSNDAUDIN, [test x$enable_rdpsndaudin = xyes])
+
+AC_ARG_ENABLE(utmp, AS_HELP_STRING([--enable-utmp],
+              [Update utmp (default: no)]),
+              [], [enable_utmp=no])
+AM_CONDITIONAL(XRDP_UTMP, [test x$enable_utmp = xyes])
 
 AC_ARG_WITH(imlib2, AS_HELP_STRING([--with-imlib2=ARG], [imlib2 library to use for non-BMP backgrounds (ARG=yes/no/<abs-path>)]),,)
 
@@ -205,6 +216,7 @@ AX_GCC_FUNC_ATTRIBUTE([format])
 AX_TYPE_SOCKLEN_T
 AX_CFLAGS_WARN_ALL
 AX_APPEND_COMPILE_FLAGS([-Wwrite-strings])
+AX_APPEND_COMPILE_FLAGS([-Wmissing-prototypes], ,[-Werror])
 
 AM_COND_IF([LINUX],
   [AX_APPEND_COMPILE_FLAGS([-Werror])]) # bsd has warnings that have not been fixed yet
@@ -217,7 +229,10 @@ AM_COND_IF([DEVEL_DEBUG],
 AC_SEARCH_LIBS([setusercontext], [util])
 
 # Define HAVE_XXXXX macros for some system functions
-AC_CHECK_FUNCS([setusercontext])
+AC_CHECK_FUNCS([setusercontext getgrouplist clearenv])
+
+# The type used by getgrouplist() is the same type used by getgroups()
+AC_TYPE_GETGROUPS
 
 # Don't fail without working nasm if rfxcodec is not enabled
 if test "x$enable_rfxcodec" != xyes; then
@@ -407,10 +422,16 @@ fi
 if test "x$enable_vsock" = "xyes"
 then
   enable_vsock=yes
-  AC_CHECK_HEADERS([linux/socket.h linux/vm_sockets.h],
-                   [AC_DEFINE([XRDP_ENABLE_VSOCK], 1, [Enable AF_VSOCK])],
-                   [],
-                   [#include <sys/socket.h>])
+  if test "x$freebsd" = "xyes"
+  then
+    # Determine if we have AF_HYPERV defined (FreeBSD 13+)
+    AC_CHECK_DECL([AF_HYPERV], [AC_DEFINE([XRDP_ENABLE_VSOCK], 1, [Enable AF_HYPERV])], [], [#include <sys/socket.h>])
+  else
+    AC_CHECK_HEADERS([linux/socket.h linux/vm_sockets.h],
+                    [AC_DEFINE([XRDP_ENABLE_VSOCK], 1, [Enable AF_VSOCK])],
+                    [],
+                    [#include <sys/socket.h>])
+  fi
 fi
 
 if test "x$enable_ipv6only" = "xyes"
@@ -436,8 +457,8 @@ fi
 # checking for fuse
 if test "x$enable_fuse" = "xyes"
 then
-  PKG_CHECK_MODULES([FUSE], [fuse >= 2.6], [],
-    [AC_MSG_ERROR([please install libfuse-dev or fuse-devel])])
+  PKG_CHECK_MODULES([FUSE], [fuse3 >= 3.1.0], [],
+    [AC_MSG_ERROR([please install libfuse3-dev or fuse3-devel])])
 fi
 
 # checking for fdk aac
@@ -458,10 +479,25 @@ fi
 if test "x$enable_mp3lame" = "xyes"
 then
   AC_CHECK_HEADER([lame/lame.h], [],
-    [AC_MSG_ERROR([please install libmp3lame-dev or lamemp3-devel])])
+    [AC_MSG_ERROR([please install libmp3lame-dev or lame-devel])])
+fi
+
+# checking for ibus includes
+if test "x$enable_ibus" = "xyes"
+then
+  PKG_CHECK_MODULES([IBUS], [ibus-1.0 >= 1.5], [],
+    [AC_MSG_ERROR([please install libibus-1.0-dev or ibus-devel])])
+
+  # ibus uses dbus which depends on glib
+  PKG_CHECK_MODULES([GLIB2], [glib-2.0 >= 2.56], [],
+    [AC_MSG_ERROR([please install libglib2.0-dev or glib2.0-devel])])
 fi
 
 AS_IF( [test "x$enable_pixman" = "xyes"] , [PKG_CHECK_MODULES(PIXMAN, pixman-1 >= 0.1.0)] )
+
+AS_IF( [test "x$enable_x264" = "xyes"] , [PKG_CHECK_MODULES(XRDP_X264, x264 >= 0.3.0)] )
+
+AS_IF( [test "x$enable_openh264" = "xyes"] , [PKG_CHECK_MODULES(XRDP_OPENH264, openh264 >= 2.0.0)] )
 
 # checking for TurboJPEG
 if test "x$enable_tjpeg" = "xyes"
@@ -511,6 +547,22 @@ AC_CHECK_HEADER([X11/extensions/Xrandr.h], [],
   [AC_MSG_ERROR([please install libxrandr-dev or libXrandr-devel])],
   [#include <X11/Xlib.h>])
 
+# checking for XKB
+AC_CHECK_HEADER([X11/extensions/XKBrules.h], [],
+  [AC_MSG_ERROR([please install libxkbfile-dev or libxkbfile-devel])],
+  [#include <X11/Xlib.h>
+#include <X11/XKBlib.h>
+#include <stdio.h>])
+
+if test "x$enable_utmp" = "xyes"
+then
+    AC_CHECK_HEADERS(utmp.h utmpx.h)
+
+    # Test for non-standard extensions in struct utmpx
+    AXRDP_CHECK_UTMPX_MEMBER_EXISTS([ut_host], [HAVE_UTMPX_UT_HOST])
+    AXRDP_CHECK_UTMPX_MEMBER_EXISTS([ut_exit], [HAVE_UTMPX_UT_EXIT])
+fi
+
 CFLAGS="$save_CFLAGS"
 
 # perform unit tests if libcheck and libmocka found
@@ -558,9 +610,15 @@ AC_ARG_WITH([pamconfdir],
                   [], [with_pamconfdir="$sysconfdir/pam.d"])
 AC_SUBST([pamconfdir], [$with_pamconfdir])
 
+AC_ARG_WITH([sysconfsubdir],
+  [AS_HELP_STRING([--with-sysconfsubdir=DIR],
+                  [Use subdirectory for config files (default: xrdp)]))],
+                  [], [with_sysconfsubdir="xrdp"])
+AC_SUBST([sysconfsubdir], [$with_sysconfsubdir])
+
 PKG_INSTALLDIR
 
-AC_CHECK_HEADERS([sys/prctl.h])
+AC_CHECK_HEADERS([sys/prctl.h uchar.h])
 
 AC_CONFIG_FILES([
   common/Makefile
@@ -599,6 +657,7 @@ AC_CONFIG_FILES([
   tools/Makefile
   tools/devel/Makefile
   tools/devel/tcp_proxy/Makefile
+  tools/chkpriv/Makefile
   vnc/Makefile
   xrdpapi/Makefile
   xrdp/Makefile
@@ -620,14 +679,23 @@ echo "  fdkaac                  $enable_fdkaac"
 echo "  jpeg                    $enable_jpeg"
 echo "  turbo jpeg              $enable_tjpeg"
 echo "  rfxcodec                $enable_rfxcodec"
+echo "  x264                    $enable_x264"
+echo "  openh264                $enable_openh264"
 echo "  painter                 $enable_painter"
 echo "  pixman                  $enable_pixman"
 echo "  fuse                    $enable_fuse"
 echo "  ipv6                    $enable_ipv6"
 echo "  ipv6only                $enable_ipv6only"
 echo "  vsock                   $enable_vsock"
+echo "  ibus                    $enable_ibus"
 echo "  auth mechanism          $auth_mech"
 echo "  rdpsndaudin             $enable_rdpsndaudin"
+echo "  utmp support            $enable_utmp"
+if test x$enable_utmp = xyes; then
+    echo "    utmpx.ut_host         $ac_cv_utmpx_has_ut_host"
+    echo "    utmpx.ut_exit         $ac_cv_utmpx_has_ut_exit"
+fi
+
 echo
 echo "  with imlib2             $use_imlib2"
 echo "  with freetype2          $use_freetype2"
@@ -642,11 +710,11 @@ echo "  exec_prefix             $exec_prefix"
 echo "  libdir                  $libdir"
 echo "  bindir                  $bindir"
 echo "  sysconfdir              $sysconfdir"
+echo "  sysconfdir+subdir       $sysconfdir/$sysconfsubdir"
 echo "  pamconfdir              $pamconfdir"
 echo "  localstatedir           $localstatedir"
 echo "  runstatedir             $runstatedir"
 echo "  socketdir               $socketdir"
-echo "  sesmanruntimedir        $sesmanruntimedir"
 echo ""
 echo "  unit tests performable  $perform_unit_tests"
 echo ""

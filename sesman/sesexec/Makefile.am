@@ -1,13 +1,17 @@
 AM_CPPFLAGS = \
-  -DXRDP_CFG_PATH=\"${sysconfdir}/xrdp\" \
+  -DXRDP_CFG_PATH=\"${sysconfdir}/${sysconfsubdir}\" \
   -DXRDP_SBIN_PATH=\"${sbindir}\" \
   -DXRDP_LIBEXEC_PATH=\"${libexecdir}/xrdp\" \
-  -DXRDP_SOCKET_PATH=\"${socketdir}\" \
+  -DXRDP_SOCKET_ROOT_PATH=\"${socketdir}\" \
   -I$(top_srcdir)/sesman/libsesman \
   -I$(top_srcdir)/libipm \
   -I$(top_srcdir)/common
 
 SESEXEC_EXTRA_LIBS =
+
+if XRDP_UTMP
+    AM_CPPFLAGS += -DUSE_UTMP
+endif
 
 pkglibexec_PROGRAMS = \
   xrdp-sesexec
@@ -25,6 +29,8 @@ xrdp_sesexec_SOURCES = \
   env.h \
   login_info.c \
   login_info.h \
+  sessionrecord.c \
+  sessionrecord.h \
   xauth.c \
   xauth.h \
   xwait.c \

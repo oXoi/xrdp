@@ -21,6 +21,17 @@
 #ifndef XUP_H
 #define XUP_H
 
+/**
+ * Enum for the states used to process a
+ * capabilities message from the Xorg module
+ */
+enum caps_processing_status
+{
+    E_CAPS_NOT_PROCESSED, ///< Capabilities mesage from module not processed
+    E_CAPS_OK,            ///< Capabilities are OK
+    E_CAPS_NOT_OK         ///< Capabilities are not OK
+};
+
 /* include other h files */
 #include "arch.h"
 #include "parse.h"
@@ -34,6 +45,7 @@
 #define CURRENT_MOD_VER 4
 
 struct source_info;
+struct xrdp_client_info;
 
 struct mod
 {
@@ -55,7 +67,10 @@ struct mod
     int (*mod_suppress_output)(struct mod *v, int suppress,
                                int left, int top, int right, int bottom);
     int (*mod_server_monitor_resize)(struct mod *v,
-                                     int width, int height);
+                                     int width, int height,
+                                     int num_monitors,
+                                     const struct monitor_info *monitors,
+                                     int *in_progress);
     int (*mod_server_monitor_full_invalidate)(struct mod *v,
             int width, int height);
     int (*mod_server_version_message)(struct mod *v);
@@ -94,7 +109,10 @@ struct mod
                             int box_left, int box_top,
                             int box_right, int box_bottom,
                             int x, int y, char *data, int data_len);
-    int (*server_reset)(struct mod *v, int width, int height, int bpp);
+    int (*client_monitor_resize)(struct mod *v, int width, int height,
+                                 int num_monitors,
+                                 const struct monitor_info *monitors);
+    int (*server_monitor_resize_done)(struct mod *v);
     int (*server_get_channel_count)(struct mod *v);
     int (*server_query_channel)(struct mod *v, int index,
                                 char *channel_name,
@@ -105,6 +123,8 @@ struct mod
                                   int total_data_len, int flags);
     int (*server_bell_trigger)(struct mod *v);
     int (*server_chansrv_in_use)(struct mod *v);
+    void (*server_init_xkb_layout)(struct mod *v,
+                                   struct xrdp_client_info *client_info);
     /* off screen bitmaps */
     int (*server_create_os_surface)(struct mod *v, int rdpindex,
                                     int width, int height);
@@ -165,8 +185,12 @@ struct mod
                                  int num_crects, short *crects,
                                  char *data, int left, int top,
                                  int width, int height,
-                                 int flags, int frame_id);
-    tintptr server_dumby[100 - 48]; /* align, 100 minus the number of server
+                                 int flags, int frame_id,
+                                 void *shmem_ptr, int shmem_bytes);
+    int (*server_egfx_cmd)(struct mod *v,
+                           char *cmd, int cmd_bytes,
+                           char *data, int data_bytes);
+    tintptr server_dumby[100 - 51]; /* align, 100 minus the number of server
                                      functions above */
     /* common */
     tintptr handle; /* pointer to self as long */
@@ -188,6 +212,8 @@ struct mod
     int screen_shmem_id_mapped; /* boolean */
     char *screen_shmem_pixels;
     struct trans *trans;
+    char keycode_set[32];
+    enum caps_processing_status caps_processing_status;
 };
 
 #endif // XUP_H

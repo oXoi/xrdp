@@ -52,8 +52,6 @@ struct clip_c2s /* client to server, pasting from mstsc to linux app */
     int xrdp_clip_type; /* XRDP_CB_TEXT, XRDP_CB_BITMAP, XRDP_CB_FILE, ... */
     int converted;
     int in_request; /* a data request has been sent to client */
-    int doing_response_ss; /* doing response short circuit */
-    Time clip_time;
 };
 
 struct clip_file_desc /* CLIPRDR_FILEDESCRIPTOR */
@@ -67,8 +65,15 @@ struct clip_file_desc /* CLIPRDR_FILEDESCRIPTOR */
     char cFileName[260 * 4]; /* Allow each UCS-16 char to become 32 bits */
 };
 
-int clipboard_out_unicode(struct stream *s, const char *text,
-                          int num_chars);
-int clipboard_in_unicode(struct stream *s, char *text, int *num_chars);
+/**
+ * Input a terminated UTF-16 string from a stream as UTF-8.
+ * @param s stream
+ * @param text UTF-8 String buffer
+ * @param text_len Length of above
+ * @return number of bytes copied from stream
+ */
+unsigned int
+clipboard_in_utf16_le_as_utf8(struct stream *s, char *text,
+                              unsigned int num_chars);
 
 #endif

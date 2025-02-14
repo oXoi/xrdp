@@ -26,6 +26,7 @@
 #include <config_ac.h>
 #endif
 
+#include <ctype.h>
 #include <sys/time.h>
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
@@ -52,8 +53,8 @@ extern char g_fuse_clipboard_path[];
 
 struct cb_file_info
 {
-    char pathname[256];
-    char filename[256];
+    char *pathname;
+    char *filename;
     int flags;
     int size;
     tui64 time;
@@ -81,6 +82,103 @@ timeval2wintime(struct timeval *tv)
     return result;
 }
 #endif
+
+/**
+ * Gets a useable filename from a file specification passed to us
+ *
+ * The passed-in specification may contain instances of RFC3986 encoded
+ * octets '%xx' where 'x' is a hex digit (e.g. %20 == ASCII SPACE). For
+ * UTF-8, there may be many of these (e.g. %E6%97%A5 maps to the U+65E5
+ * Unicode character)
+ *
+ * The result must be free'd by the caller.
+ */
+static char *
+decode_rfc3986(const char *rfc3986, int len)
+{
+    char *result = (char *)malloc(len + 1);
+    if (result != NULL)
+    {
+        int i = 0;
+        int j = 0;
+        /* Copy the passed-in filename so we can modify it */
+        while (i < len)
+        {
+            /* Check for %xx for a character (e.g. %20 == ASCII 32 == SPACE) */
+            if (rfc3986[i] == '%' && (len - i) > 2 &&
+                    isxdigit(rfc3986[i + 1]) && isxdigit(rfc3986[i + 2]))
+            {
+                char jchr[] = { rfc3986[i + 1], rfc3986[i + 2], '\0' };
+                result[j++] = g_htoi(jchr);
+                i += 3;
+            }
+            else
+            {
+                result[j++] = rfc3986[i++];
+            }
+        }
+        result[j] = '\0';
+    }
+
+    return result;
+}
+
+/**
+ * Allocates a alloc_cb_file_info struct
+ *
+ * The memory for the struct is allocated in such a way that a single
+ * free() call can be used to de-allocate it
+ *
+ * Filename elements are copied into the struct
+ */
+static struct cb_file_info *
+alloc_cb_file_info(const char *full_name)
+{
+    struct cb_file_info *result = NULL;
+
+    /* Find the last path separator in the string */
+    const char *psep = strrchr(full_name, '/');
+
+    /* Separate the name into a path and an unqualified name */
+    const char *path_ptr = "/";
+    unsigned int path_len = 1;
+    const char *name_ptr;
+
+    if (psep == NULL)
+    {
+        name_ptr = full_name;
+    }
+    else if (psep == full_name)
+    {
+        name_ptr = full_name + 1;
+    }
+    else
+    {
+        path_ptr = full_name;
+        path_len = psep - full_name;
+        name_ptr = psep + 1;
+    }
+
+    /* Allocate a block big enough for the struct, and
+     * for both the strings */
+    unsigned int name_len = strlen(name_ptr);
+    unsigned int alloc_size = sizeof(struct cb_file_info) +
+                              (path_len + 1) + (name_len + 1);
+
+    result = (struct cb_file_info *)malloc(alloc_size);
+    if (result != NULL)
+    {
+        /* Get a pointer to the first byte past the struct */
+        result->pathname = (char *)(result + 1);
+        result->filename = result->pathname + path_len + 1;
+        memcpy(result->pathname, path_ptr, path_len);
+        result->pathname[path_len] = '\0';
+        memcpy(result->filename, name_ptr, name_len);
+        result->filename[name_len] = '\0';
+    }
+
+    return result;
+}
 
 /***
  * See MS-RDPECLIP 3.1.5.4.7
@@ -114,53 +212,12 @@ clipboard_send_filecontents_response_fail(int streamId)
 }
 
 /*****************************************************************************/
-/* this will replace %20 or any hex with the space or correct char
- * returns error */
-static int
-clipboard_check_file(char *filename)
-{
-    char lfilename[256];
-    char jchr[8];
-    int lindex;
-    int index;
-
-    g_memset(lfilename, 0, 256);
-    lindex = 0;
-    index = 0;
-    while (filename[index] != 0)
-    {
-        if (filename[index] == '%')
-        {
-            jchr[0] = filename[index + 1];
-            jchr[1] = filename[index + 2];
-            jchr[2] = 0;
-            index += 3;
-            lfilename[lindex] = g_htoi(jchr);
-            lindex++;
-        }
-        else
-        {
-            lfilename[lindex] = filename[index];
-            lindex++;
-            index++;
-        }
-    }
-    LOG_DEVEL(LOG_LEVEL_DEBUG, "[%s] [%s]", filename, lfilename);
-    g_strcpy(filename, lfilename);
-    return 0;
-}
-
-/*****************************************************************************/
 static int
 clipboard_get_file(const char *file, int bytes)
 {
-    int sindex;
-    int pindex;
-    int flags;
-    char full_fn[256]; /* /etc/xrdp/xrdp.ini */
-    char filename[256]; /* xrdp.ini */
-    char pathname[256]; /* /etc/xrdp */
+    char *full_fn;
     struct cb_file_info *cfi;
+    int result = 1;
 
     /* x-special/gnome-copied-files */
     if ((g_strncmp(file, "copy", 4) == 0) && (bytes == 4))
@@ -171,35 +228,23 @@ clipboard_get_file(const char *file, int bytes)
     {
         return 0;
     }
-    sindex = 0;
-    flags = CB_FILE_ATTRIBUTE_ARCHIVE;
+
     /* text/uri-list */
     /* x-special/gnome-copied-files */
-    if (g_strncmp(file, "file://", 7) == 0)
+    if (bytes > 7 && g_strncmp(file, "file://", 7) == 0)
     {
-        sindex = 7;
+        full_fn = decode_rfc3986(file + 7, bytes - 7);
     }
-    pindex = bytes;
-    while (pindex > sindex)
+    else
     {
-        if (file[pindex] == '/')
-        {
-            break;
-        }
-        pindex--;
+        full_fn = decode_rfc3986(file, bytes);
     }
-    g_memset(pathname, 0, 256);
-    g_memset(filename, 0, 256);
-    g_memcpy(pathname, file + sindex, pindex - sindex);
-    if (pathname[0] == 0)
+
+    if (full_fn == NULL)
     {
-        pathname[0] = '/';
+        LOG(LOG_LEVEL_ERROR, "clipboard_get_file: Out of memory");
+        return 1;
     }
-    g_memcpy(filename, file + pindex + 1, (bytes - 1) - pindex);
-    /* this should replace %20 with space */
-    clipboard_check_file(pathname);
-    clipboard_check_file(filename);
-    g_snprintf(full_fn, 255, "%s/%s", pathname, filename);
 
     /*
      * Before we look at the file, see if it's in the FUSE filesystem. If it is,
@@ -209,68 +254,69 @@ clipboard_get_file(const char *file, int bytes)
     {
         LOG(LOG_LEVEL_ERROR, "clipboard_get_file: Can't add client-side file "
             "%s to clipboard", full_fn);
-        return 1;
     }
-    if (g_directory_exist(full_fn))
+    else if (g_directory_exist(full_fn))
     {
         LOG(LOG_LEVEL_ERROR, "clipboard_get_file: file [%s] is a directory, "
             "not supported", full_fn);
-        flags |= CB_FILE_ATTRIBUTE_DIRECTORY;
-        return 1;
     }
-    if (!g_file_exist(full_fn))
+    else if (!g_file_exist(full_fn))
     {
         LOG(LOG_LEVEL_ERROR, "clipboard_get_file: file [%s] does not exist",
             full_fn);
-        return 1;
+    }
+    else if ((cfi = alloc_cb_file_info(full_fn)) == NULL)
+    {
+        LOG(LOG_LEVEL_ERROR, "clipboard_get_file: Out of memory");
     }
     else
     {
-        cfi = (struct cb_file_info *)g_malloc(sizeof(struct cb_file_info), 1);
         list_add_item(g_files_list, (tintptr)cfi);
-        g_strcpy(cfi->filename, filename);
-        g_strcpy(cfi->pathname, pathname);
         cfi->size = g_file_get_size(full_fn);
-        cfi->flags = flags;
-        cfi->time = (g_time1() + CB_EPOCH_DIFF) * 10000000LL;
+        cfi->flags = CB_FILE_ATTRIBUTE_ARCHIVE;
+        cfi->time = (time(NULL) + CB_EPOCH_DIFF) * 10000000LL;
         LOG_DEVEL(LOG_LEVEL_DEBUG, "ok filename [%s] pathname [%s] size [%d]",
                   cfi->filename, cfi->pathname, cfi->size);
+        result = 0;
     }
-    return 0;
+
+    free(full_fn);
+    return result;
 }
 
 /*****************************************************************************/
+/*
+ * Calls clipboard_get_file() for each filename in a list.
+ *
+ * List items are separated by line terminators. Blank items are ignored */
 static int
 clipboard_get_files(const char *files, int bytes)
 {
-    int index;
-    int file_index;
-    char file[512];
+    const char *start = files;
+    const char *end = files + bytes;
+    const char *p;
 
-    file_index = 0;
-    for (index = 0; index < bytes; index++)
+    for (p = start ; p < end ; ++p)
     {
-        if (files[index] == '\n' || files[index] == '\r')
+        if (*p == '\n' || *p == '\r')
         {
-            if (file_index > 0)
+            /* Skip zero-length files (which might be caused by
+             * multiple line terminators */
+            if (p > start)
             {
-                if (clipboard_get_file(file, file_index) == 0)
-                {
-                }
-                file_index = 0;
+                /* Get file. Errors are logged */
+                (void)clipboard_get_file(start, p - start);
             }
-        }
-        else
-        {
-            file[file_index] = files[index];
-            file_index++;
+
+            /* Move the start of filename pointer to either 'end', or
+             * the next character which will either be a filename or
+             * another terminator */
+            start = p + 1;
         }
     }
-    if (file_index > 0)
+    if (end > start)
     {
-        if (clipboard_get_file(file, file_index) == 0)
-        {
-        }
+        (void)clipboard_get_file(start, end - start);
     }
     if (g_files_list->count < 1)
     {
@@ -293,7 +339,8 @@ clipboard_send_data_response_for_file(const char *data, int data_size)
     int flags;
     int index;
     tui32 ui32;
-    char fn[256];
+    unsigned int utf8_count;
+    unsigned int utf16_count;
     struct cb_file_info *cfi;
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_send_data_response_for_file: data_size %d",
@@ -334,9 +381,19 @@ clipboard_send_data_response_for_file(const char *data, int data_size)
         /* file size */
         out_uint32_le(s, 0);
         out_uint32_le(s, cfi->size);
-        g_snprintf(fn, 255, "%s", cfi->filename);
-        clipboard_out_unicode(s, fn, 256);
-        out_uint8s(s, 8); /* pad */
+        /* Name is fixed-size 260 UTF-16 words */
+        utf8_count = strlen(cfi->filename) + 1;  // Include terminator
+        utf16_count = utf8_as_utf16_word_count(cfi->filename, utf8_count);
+        if (utf16_count > 260)
+        {
+            LOG(LOG_LEVEL_ERROR,
+                "clipboard_send_data_response_for_file:"
+                " filename overflow (%u words)", utf16_count);
+            utf8_count = 0;
+            utf16_count = 0;
+        }
+        out_utf8_as_utf16_le(s, cfi->filename, utf8_count);
+        out_uint8s(s, (260 - utf16_count) * 2);
     }
     out_uint32_le(s, 0);
     s_mark_end(s);
@@ -481,10 +538,12 @@ clipboard_send_file_data(int streamId, int lindex,
     make_stream(s);
     init_stream(s, cbRequested + 64);
     size = g_file_read(fd, s->data + 12, cbRequested);
-    if (size < 1)
+    // If we're at end-of-file, 0 is a valid response
+    if (size < 0)
     {
-        LOG_DEVEL(LOG_LEVEL_ERROR, "clipboard_send_file_data: read error, want %d got %d",
-                  cbRequested, size);
+        LOG_DEVEL(LOG_LEVEL_ERROR,
+                  "clipboard_send_file_data: read error, want %d got [%s]",
+                  cbRequested, g_get_strerror());
         free_stream(s);
         g_file_close(fd);
         clipboard_send_filecontents_response_fail(streamId);
@@ -620,7 +679,6 @@ clipboard_process_file_response(struct stream *s, int clip_msg_status,
 static int
 clipboard_c2s_in_file_info(struct stream *s, struct clip_file_desc *cfd)
 {
-    int num_chars;
     int filename_bytes;
     int ex_bytes;
 
@@ -637,8 +695,16 @@ clipboard_c2s_in_file_info(struct stream *s, struct clip_file_desc *cfd)
     in_uint32_le(s, cfd->lastWriteTimeHigh);
     in_uint32_le(s, cfd->fileSizeHigh);
     in_uint32_le(s, cfd->fileSizeLow);
-    num_chars = sizeof(cfd->cFileName);
-    filename_bytes = clipboard_in_unicode(s, cfd->cFileName, &num_chars);
+    filename_bytes =
+        clipboard_in_utf16_le_as_utf8(s, cfd->cFileName,
+                                      sizeof(cfd->cFileName));
+    if (filename_bytes > 520)
+    {
+        LOG(LOG_LEVEL_ERROR,
+            "Filename in CLIPRDR_FILEDESCRIPTOR is too long (%d bytes)",
+            filename_bytes);
+        return 1;
+    }
     ex_bytes = 520 - filename_bytes;
     in_uint8s(s, ex_bytes);
     LOG_DEVEL(LOG_LEVEL_DEBUG, "clipboard_c2s_in_file_info:");
@@ -648,7 +714,7 @@ clipboard_c2s_in_file_info(struct stream *s, struct clip_file_desc *cfd)
               cfd->lastWriteTimeLow);
     LOG_DEVEL(LOG_LEVEL_DEBUG, "  fileSize 0x%8.8x%8.8x", cfd->fileSizeHigh,
               cfd->fileSizeLow);
-    LOG_DEVEL(LOG_LEVEL_DEBUG, "  num_chars %d cFileName [%s]", num_chars, cfd->cFileName);
+    LOG_DEVEL(LOG_LEVEL_DEBUG, "  cFileName [%s]", cfd->cFileName);
     return 0;
 }
 

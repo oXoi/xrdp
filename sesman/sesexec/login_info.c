@@ -57,8 +57,8 @@ log_authfail_message(const char *username, const char *ip_addr)
     {
         ip_addr = "unknown";
     }
-    LOG(LOG_LEVEL_INFO, "AUTHFAIL: user=%s ip=%s time=%d",
-        username, ip_addr, g_time1());
+    LOG(LOG_LEVEL_INFO, "AUTHFAIL: user=%s ip=%s time=%ld",
+        username, ip_addr, (long)time(NULL));
 }
 
 /******************************************************************************/
@@ -280,7 +280,8 @@ login_info_sys_login_user(struct trans *scp_trans,
                 }
             }
 
-            if (scp_send_login_response(scp_trans, status, server_closed) != 0)
+            if (scp_send_login_response(scp_trans, status,
+                                        server_closed, result->uid) != 0)
             {
                 status = E_SCP_LOGIN_GENERAL_ERROR;
                 break;

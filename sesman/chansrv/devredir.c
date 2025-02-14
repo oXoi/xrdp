@@ -43,6 +43,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <fcntl.h>
 #include <string.h>
 
@@ -53,6 +54,7 @@
 #include "log.h"
 #include "chansrv.h"
 #include "chansrv_fuse.h"
+#include "chansrv_xfs.h"
 #include "devredir.h"
 #include "smartcard.h"
 #include "ms-rdpefs.h"
@@ -92,17 +94,28 @@ enum COMPLETION_TYPE
     CID_RENAME_FILE,
     CID_RENAME_FILE_RESP,
     CID_LOOKUP,
-    CID_SETATTR
+    CID_SETATTR,
+    CID_STATFS,
+    CID_STATFS_RESP
 };
 
 
 /* globals */
 extern int g_rdpdr_chan_id; /* in chansrv.c */
-int g_is_printer_redir_supported = 0;
-int g_is_port_redir_supported = 0;
-int g_is_drive_redir_supported = 0;
-int g_is_smartcard_redir_supported = 0;
-int g_drive_redir_version = 1;
+
+/* Capabilities from GENERAL_CAPS_SET in Client Core Capability Response */
+struct client_caps
+{
+    tui32 extended_pdu;
+    int printer_redir_supported;
+    int port_redir_supported;
+    int drive_redir_supported;
+    int smartcard_redir_supported;
+    unsigned int drive_redir_version;
+};
+
+static struct client_caps g_ccap;
+
 tui32 g_completion_id = 1;
 
 tui32 g_clientID;           /* unique client ID - announced by client */
@@ -125,6 +138,12 @@ static void devredir_proc_cid_lookup(  IRP *irp,
 static void devredir_proc_cid_setattr( IRP *irp,
                                        struct stream *s_in,
                                        enum NTSTATUS IoStatus);
+static void devredir_proc_cid_statfs(  IRP *irp,
+                                       struct stream *s_in,
+                                       enum NTSTATUS IoStatus);
+static void devredir_proc_cid_statfs_resp(IRP *irp,
+        struct stream *s_in,
+        enum NTSTATUS IoStatus);
 /* Other local functions */
 static void devredir_send_server_core_cap_req(void);
 static void devredir_send_server_clientID_confirm(void);
@@ -134,15 +153,13 @@ static int devredir_proc_client_core_cap_resp(struct stream *s);
 static int devredir_proc_client_devlist_announce_req(struct stream *s);
 static int devredir_proc_client_devlist_remove_req(struct stream *s);
 static int devredir_proc_device_iocompletion(struct stream *s);
-static void devredir_proc_query_dir_response(IRP *irp,
+static int devredir_proc_query_dir_response(IRP *irp,
         struct stream *s_in,
         tui32 DeviceId,
         tui32 CompletionId,
         enum NTSTATUS IoStatus);
 
 static void devredir_cvt_slash(char *path);
-static void devredir_cvt_to_unicode(char *unicode, const char *path);
-static void devredir_cvt_from_unicode_len(char *path, char *unicode, int len);
 static int  devredir_string_ends_with(const char *string, char c);
 
 /*****************************************************************************/
@@ -184,10 +201,11 @@ devredir_deinit(void)
 
 /*****************************************************************************/
 
+#ifdef USE_DEVEL_LOGGING
 /*
  * Convert a COMPLETION_TYPE to a string
  */
-const char *completion_type_to_str(enum COMPLETION_TYPE cid)
+static const char *completion_type_to_str(enum COMPLETION_TYPE cid)
 {
     return
         (cid == CID_CREATE_DIR_REQ)     ?  "CID_CREATE_DIR_REQ" :
@@ -204,8 +222,11 @@ const char *completion_type_to_str(enum COMPLETION_TYPE cid)
         (cid == CID_RENAME_FILE_RESP)   ?  "CID_RENAME_FILE_RESP" :
         (cid == CID_LOOKUP)             ?  "CID_LOOKUP" :
         (cid == CID_SETATTR)            ?  "CID_SETATTR" :
+        (cid == CID_STATFS)             ?  "CID_STATFS" :
+        (cid == CID_STATFS_RESP)        ?  "CID_STATFS_RESP" :
         /* default */                      "<unknown>";
 };
+#endif
 
 /*****************************************************************************/
 
@@ -370,19 +391,18 @@ devredir_data_in(struct stream *s, int chan_id, int chan_flags, int length,
                     case RDP_CLIENT_60_61:
                         break;
                 }
-                // LK_TODO devredir_send_server_clientID_confirm();
             }
             break;
 
         case PAKID_CORE_CLIENT_NAME:
             /* client is telling us its computer name; do we even care? */
 
-            /* let client know login was successful */
-            devredir_send_server_user_logged_on();
-            usleep(1000 * 100);
-
-            /* let client know our capabilities */
-            devredir_send_server_core_cap_req();
+            /* See 3.3.5.1.6 for sequencing rules */
+            if (g_client_rdp_version >= RDP_CLIENT_51)
+            {
+                /* let client know our capabilities */
+                devredir_send_server_core_cap_req();
+            }
 
             /* send confirm clientID */
             devredir_send_server_clientID_confirm();
@@ -390,6 +410,19 @@ devredir_data_in(struct stream *s, int chan_id, int chan_flags, int length,
 
         case PAKID_CORE_CLIENT_CAPABILITY:
             rv = devredir_proc_client_core_cap_resp(ls);
+            if (rv == 0)
+            {
+                if ((g_ccap.extended_pdu & RDPDR_USER_LOGGEDON_PDU) != 0)
+                {
+                    /* Tell client to announce remaining devices */
+                    devredir_send_server_user_logged_on();
+                }
+                else if (g_client_rdp_version >= RDP_CLIENT_51)
+                {
+                    /* See 3.3.5.1.7 */
+                    devredir_send_server_clientID_confirm();
+                }
+            }
             break;
 
         case PAKID_CORE_DEVICELIST_ANNOUNCE:
@@ -424,7 +457,7 @@ done:
 int
 devredir_get_wait_objs(tbus *objs, int *count, int *timeout)
 {
-    if (g_is_smartcard_redir_supported)
+    if (g_ccap.smartcard_redir_supported)
     {
         return scard_get_wait_objs(objs, count, timeout);
     }
@@ -435,7 +468,7 @@ devredir_get_wait_objs(tbus *objs, int *count, int *timeout)
 int
 devredir_check_wait_objs(void)
 {
-    if (g_is_smartcard_redir_supported)
+    if (g_ccap.smartcard_redir_supported)
     {
         return scard_check_wait_objs();
     }
@@ -571,9 +604,12 @@ devredir_send_server_device_announce_resp(tui32 device_id,
 }
 
 /**
+ * Create a file system object
+ *
+ * See [MS-RDPEFS] 2.2.1.4.1 (DR_CREATE_REQ)
+ *
  * @return 0 on success, -1 on failure
  *****************************************************************************/
-
 static int
 devredir_send_drive_create_request(tui32 device_id,
                                    const char *path,
@@ -585,7 +621,8 @@ devredir_send_drive_create_request(tui32 device_id,
 {
     struct stream *s;
     int            bytes;
-    int            len;
+    int            path_len;
+    unsigned int   unicode_byte_count;
     tui32          SharedAccess;
 
     LOG_DEVEL(LOG_LEVEL_DEBUG, "device_id=%d path=\"%s\""
@@ -597,10 +634,11 @@ devredir_send_drive_create_request(tui32 device_id,
               FileAttributes, CreateOptions,
               completion_id);
 
-    /* path in unicode needs this much space */
-    len = ((g_mbstowcs(NULL, path, 0) * sizeof(twchar)) / 2) + 2;
+    /* Find number of bytes required for Unicode path  + terminator */
+    path_len = strlen(path) + 1; // includes terminator
+    unicode_byte_count = utf8_as_utf16_word_count(path, path_len) * 2;
 
-    xstream_new(s, 1024 + len);
+    xstream_new(s, (int)(64 + unicode_byte_count));
 
     /* FILE_SHARE_DELETE allows files to be renamed while in use
        (in some circumstances) */
@@ -621,9 +659,8 @@ devredir_send_drive_create_request(tui32 device_id,
     xstream_wr_u32_le(s, SharedAccess);      /* SharedAccess               */
     xstream_wr_u32_le(s, CreateDisposition); /* CreateDisposition          */
     xstream_wr_u32_le(s, CreateOptions);     /* CreateOptions              */
-    xstream_wr_u32_le(s, len);               /* PathLength                 */
-    devredir_cvt_to_unicode(s->p, path);     /* path in unicode            */
-    xstream_seek(s, len);
+    xstream_wr_u32_le(s, unicode_byte_count);/* PathLength                 */
+    out_utf8_as_utf16_le(s, path, path_len); /* Path */
 
     /* send to client */
     bytes = xstream_len(s);
@@ -671,34 +708,31 @@ devredir_send_drive_close_request(tui16 Component, tui16 PacketId,
 /**
  * @brief ask client to enumerate directory
  *
- * Server Drive Query Directory Request
- * DR_DRIVE_QUERY_DIRECTORY_REQ
- *
+ * See [MS-RDPEFS] 2.2.3.3.10 (DR_DRIVE_QUERY_DIRECTORY_REQ)
  *****************************************************************************/
-// LK_TODO Path needs to be Unicode
 static void
 devredir_send_drive_dir_request(IRP *irp, tui32 device_id,
                                 tui32 InitialQuery, char *Path)
 {
     struct stream *s;
     int            bytes;
-    char           upath[4096]; // LK_TODO need to malloc this
-    int            path_len = 0;
+    unsigned int   path_len;
+    unsigned int   unicode_byte_count;
 
     /* during Initial Query, Path cannot be NULL */
-    if (InitialQuery)
+    if (InitialQuery && Path != NULL)
     {
-        if (Path == NULL)
-        {
-            return;
-        }
-
-        /* Path in unicode needs this much space */
-        path_len = ((g_mbstowcs(NULL, Path, 0) * sizeof(twchar)) / 2) + 2;
-        devredir_cvt_to_unicode(upath, Path);
+        /* Find number of words required for Unicode path */
+        path_len = strlen(Path) + 1; // includes terminator
+        unicode_byte_count = utf8_as_utf16_word_count(Path, path_len) * 2;
+    }
+    else
+    {
+        path_len = 0;
+        unicode_byte_count = 0;
     }
 
-    xstream_new(s, 1024 + path_len);
+    xstream_new(s, (int)(64 + unicode_byte_count));
 
     irp->completion_type = CID_DIRECTORY_CONTROL;
     devredir_insert_DeviceIoRequest(s,
@@ -711,17 +745,9 @@ devredir_send_drive_dir_request(IRP *irp, tui32 device_id,
     xstream_wr_u32_le(s, FileDirectoryInformation);  /* FsInformationClass */
     xstream_wr_u8(s, InitialQuery);                  /* InitialQuery       */
 
-    if (!InitialQuery)
-    {
-        xstream_wr_u32_le(s, 0);                     /* PathLength         */
-        xstream_seek(s, 23);
-    }
-    else
-    {
-        xstream_wr_u32_le(s, path_len);              /* PathLength         */
-        xstream_seek(s, 23);                         /* Padding            */
-        xstream_wr_string(s, upath, path_len);
-    }
+    xstream_wr_u32_le(s, unicode_byte_count);        /* PathLength         */
+    xstream_seek(s, 23);                             /* Padding            */
+    out_utf8_as_utf16_le(s, Path, path_len);         /* Path */
 
     /* send to client */
     bytes = xstream_len(s);
@@ -735,6 +761,47 @@ devredir_send_drive_dir_request(IRP *irp, tui32 device_id,
 ******************************************************************************/
 
 /**
+ * Process a GENERAL_CAPS_SET packet from the client
+ * @param s Stream. CAPABILITY_HEADER is already read
+ * @param cap_len Amount of data left in stream for the packet
+ * @return 0 for success, -1 otherwise
+ *
+ * Caller is responsible for skipping unused data from this
+ * capability in the input stream.
+ */
+static int
+process_client_general_caps_set(struct stream *s, unsigned int cap_len,
+                                struct client_caps *ccap)
+{
+    int rv = -1;
+
+    // Data we don't check at the start of the packet
+#define PACKET_SKIP_LENGTH ( \
+                             4 + /* osType */ \
+                             4 + /* osVersion */ \
+                             2 + /* protocolMajorVersion */ \
+                             2 + /* protocolMinorVersion */ \
+                             4 + /* ioCode1 */ \
+                             4) /* ioCode2 */
+
+    if (cap_len < (PACKET_SKIP_LENGTH + 4))
+    {
+        LOG(LOG_LEVEL_ERROR,
+            "[MS-RDPEFS] GENERAL_CAPS_SET: Short packet (%u bytes) encountered",
+            cap_len);
+    }
+    else
+    {
+        xstream_seek(s, PACKET_SKIP_LENGTH);
+        xstream_rd_u32_le(s, ccap->extended_pdu);
+        rv = 0;
+    }
+
+    return rv;
+#undef PACKET_SKIP_LENGTH
+}
+
+/**
  * @brief process client's response to our core_capability_req() msg
  *
  * @param   s   stream containing client's response
@@ -743,12 +810,16 @@ devredir_send_drive_dir_request(IRP *irp, tui32 device_id,
 static int
 devredir_proc_client_core_cap_resp(struct stream *s)
 {
+#define CAPABILITY_HEADER_LEN 8
     int i;
     tui16 num_caps;
     tui16 cap_type;
     tui16 cap_len;
     tui32 cap_version;
-    char *holdp;
+
+    // Reset to defaults
+    memset(&g_ccap, 0, sizeof(g_ccap));
+    g_ccap.drive_redir_version = 1;
 
     if (!s_check_rem_and_log(s, 4, "Parsing [MS-RDPEFS] DR_CORE_CAPABLITY_RSP"))
     {
@@ -759,8 +830,8 @@ devredir_proc_client_core_cap_resp(struct stream *s)
 
     for (i = 0; i < num_caps; i++)
     {
-        holdp = s->p;
-        if (!s_check_rem_and_log(s, 8, "Parsing [MS-RDPEFS] CAPABILITY_HEADER"))
+        if (!s_check_rem_and_log(s, CAPABILITY_HEADER_LEN,
+                                 "Parsing [MS-RDPEFS] CAPABILITY_HEADER"))
         {
             return -1;
         }
@@ -769,46 +840,55 @@ devredir_proc_client_core_cap_resp(struct stream *s)
         xstream_rd_u32_le(s, cap_version);
         /* Convert the length to a remaining length. Underflow is possible,
          * but this is an unsigned type so that's OK */
-        cap_len -= (s->p - holdp);
-        if (cap_len > 0 &&
-                !s_check_rem_and_log(s, cap_len, "Parsing [MS-RDPEFS] CAPABILITY_HEADER length"))
+        cap_len -= CAPABILITY_HEADER_LEN;
+        if (!s_check_rem_and_log(s, cap_len,
+                                 "Parsing [MS-RDPEFS] CAPABILITY_HEADER data"))
         {
             return -1;
         }
 
+        // Save our stream position. iso_hdr is otherwise
+        // unused in this stream
+        s_push_layer(s, iso_hdr, 0);
         switch (cap_type)
         {
             case CAP_GENERAL_TYPE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "got CAP_GENERAL_TYPE");
+                if (process_client_general_caps_set(s, cap_len, &g_ccap) < 0)
+                {
+                    return -1;
+                }
                 break;
 
             case CAP_PRINTER_TYPE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "got CAP_PRINTER_TYPE");
-                g_is_printer_redir_supported = 1;
+                g_ccap.printer_redir_supported = 1;
                 break;
 
             case CAP_PORT_TYPE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "got CAP_PORT_TYPE");
-                g_is_port_redir_supported = 1;
+                g_ccap.port_redir_supported = 1;
                 break;
 
             case CAP_DRIVE_TYPE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "got CAP_DRIVE_TYPE");
-                g_is_drive_redir_supported = 1;
+                g_ccap.drive_redir_supported = 1;
                 if (cap_version == 2)
                 {
-                    g_drive_redir_version = 2;
+                    g_ccap.drive_redir_version = 2;
                 }
                 break;
 
             case CAP_SMARTCARD_TYPE:
                 LOG_DEVEL(LOG_LEVEL_DEBUG, "got CAP_SMARTCARD_TYPE");
-                g_is_smartcard_redir_supported = (scard_init() == 0);
+                g_ccap.smartcard_redir_supported = (scard_init() == 0);
                 break;
         }
+        s_pop_layer(s, iso_hdr); // Move back to start of capability data
         xstream_seek(s, cap_len);
     }
     return 0;
+#undef CAPABILITY_HEADER_LEN
 }
 
 static int
@@ -1095,8 +1175,12 @@ devredir_proc_device_iocompletion(struct stream *s)
                 break;
 
             case CID_DIRECTORY_CONTROL:
-                devredir_proc_query_dir_response(irp, s, DeviceId,
-                                                 CompletionId, IoStatus);
+                if (devredir_proc_query_dir_response(irp, s, DeviceId,
+                                                     CompletionId,
+                                                     IoStatus) != 0)
+                {
+                    return -1;
+                }
                 break;
 
             case CID_RMDIR_OR_FILE:
@@ -1133,6 +1217,14 @@ devredir_proc_device_iocompletion(struct stream *s)
                 devredir_proc_cid_setattr(irp, s, IoStatus);
                 break;
 
+            case CID_STATFS:
+                devredir_proc_cid_statfs(irp, s, IoStatus);
+                break;
+
+            case CID_STATFS_RESP:
+                devredir_proc_cid_statfs_resp(irp, s, IoStatus);
+                break;
+
             default:
                 LOG_DEVEL(LOG_LEVEL_ERROR, "got unknown CompletionID: DeviceId=0x%x "
                           "CompletionId=0x%x IoStatus=0x%x",
@@ -1143,31 +1235,55 @@ devredir_proc_device_iocompletion(struct stream *s)
     return 0;
 }
 
-static void
+/**
+ * Parse a query directory response
+ *
+ * See:-
+ * - [MS-RDPEFS] 2.2.3.4.10 (DR_DRIVE_QUERY_DIRECTORY_RSP)
+ * - [MS-FSCC] 2.4.10 (FileDirectoryInformation)
+ *
+ *   return 0 on success, -1 on failure
+ */
+static int
 devredir_proc_query_dir_response(IRP *irp,
                                  struct stream *s_in,
                                  tui32 DeviceId,
                                  tui32 CompletionId,
                                  enum NTSTATUS IoStatus)
 {
-    tui32 Length;
-    xstream_rd_u32_le(s_in, Length);
+    // Size of FILE_DIRECTORY_INFORMATION structure with a particular
+    // filename length
+#define FILE_DIRECTORY_INFORMATION_SIZE(FileNameLength) \
+    ((4 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 4 + 4) + FileNameLength)
+
+    xstream_seek(s_in, 4);  /* Length */
 
     if (IoStatus == STATUS_SUCCESS)
     {
-        unsigned int i;
         /* process FILE_DIRECTORY_INFORMATION structures */
-        for (i = 0 ; i < Length ; ++i)
+        while (1)
         {
-            char  filename[256];
+            /* Can we read up to the filename? */
+            if (!s_check_rem_and_log(s_in,
+                                     FILE_DIRECTORY_INFORMATION_SIZE(0),
+                                     "FILE_DIRECTORY_INFORMATION"))
+            {
+                return -1;
+            }
+
+            // Size the filename buffer so it's big enough for
+            // storing the file in our filesystem if we need to.
+            char  filename[XFS_MAXFILENAMELEN + 1];
             tui64 LastAccessTime;
             tui64 LastWriteTime;
             tui64 EndOfFile;
+            tui32 NextEntryOffset;
             tui32 FileAttributes;
             tui32 FileNameLength;
             struct file_attr fattr;
+            unsigned int flen;
 
-            xstream_seek(s_in, 4);  /* NextEntryOffset */
+            xstream_rd_u32_le(s_in, NextEntryOffset);
             xstream_seek(s_in, 4);  /* FileIndex */
             xstream_seek(s_in, 8);  /* CreationTime */
             xstream_rd_u64_le(s_in, LastAccessTime);
@@ -1177,10 +1293,20 @@ devredir_proc_query_dir_response(IRP *irp,
             xstream_seek(s_in, 8);  /* AllocationSize */
             xstream_rd_u32_le(s_in, FileAttributes);
             xstream_rd_u32_le(s_in, FileNameLength);
-
-            devredir_cvt_from_unicode_len(filename, s_in->p, FileNameLength);
-
-            i += 64 + FileNameLength;
+            if (!s_check_rem_and_log(s_in,
+                                     FileNameLength,
+                                     "FILE_DIRECTORY_INFORMATION:FileName"))
+            {
+                return -1;
+            }
+            flen = in_utf16_le_fixed_as_utf8(s_in, FileNameLength / 2,
+                                             filename, sizeof(filename));
+            if (flen > sizeof(filename))
+            {
+                LOG(LOG_LEVEL_WARNING,
+                    "Buffer was %d bytes too small for filename",
+                    (int)(flen - sizeof(filename)));
+            }
 
             //LOG_DEVEL(LOG_LEVEL_DEBUG, "LastAccessTime:    0x%llx", LastAccessTime);
             //LOG_DEVEL(LOG_LEVEL_DEBUG, "LastWriteTime:     0x%llx", LastWriteTime);
@@ -1198,6 +1324,29 @@ devredir_proc_query_dir_response(IRP *irp,
             xfuse_devredir_cb_enum_dir_add_entry(
                 (struct state_dirscan *) irp->fuse_info,
                 filename, &fattr);
+
+            /* From [MS-FSCC]
+             * {NextEntryOffset} MUST be zero if no other entries follow
+             * this one. An implementation MUST use this value to determine
+             * the location of the next entry (if multiple entries are
+             * present in a buffer). */
+            if (NextEntryOffset == 0)
+            {
+                break;
+            }
+
+            int pad = NextEntryOffset -
+                      FILE_DIRECTORY_INFORMATION_SIZE(FileNameLength);
+            if (pad > 0)
+            {
+                if (!s_check_rem_and_log(s_in,
+                                         pad,
+                                         "FILE_DIRECTORY_INFORMATION:pad"))
+                {
+                    return -1;
+                }
+                xstream_seek(s_in, pad);
+            }
         }
 
         /* Ask for more directory entries */
@@ -1219,6 +1368,9 @@ devredir_proc_query_dir_response(IRP *irp,
                                           irp->CompletionId,
                                           IRP_MJ_CLOSE, IRP_MN_NONE, 32);
     }
+
+    return 0;
+#undef FILE_DIRECTORY_INFORMATION_SIZE
 }
 
 /**
@@ -1262,9 +1414,9 @@ devredir_get_dir_listing(struct state_dirscan *fusep, tui32 device_id,
         CreateDisposition = CD_FILE_OPEN;
 
         rval = devredir_send_drive_create_request(device_id, irp->pathname,
-                DesiredAccess, CreateOptions,
-                0, CreateDisposition,
-                irp->CompletionId);
+               DesiredAccess, CreateOptions,
+               0, CreateDisposition,
+               irp->CompletionId);
 
         LOG_DEVEL(LOG_LEVEL_DEBUG, "looking for device_id=%d path=%s", device_id, irp->pathname);
 
@@ -1329,10 +1481,10 @@ devredir_lookup_entry(struct state_lookup *fusep, tui32 device_id,
                   device_id, irp->pathname, irp->CompletionId);
 
         rval = devredir_send_drive_create_request(device_id,
-                irp->pathname,
-                DesiredAccess, CreateOptions,
-                0, CreateDisposition,
-                irp->CompletionId);
+               irp->pathname,
+               DesiredAccess, CreateOptions,
+               0, CreateDisposition,
+               irp->CompletionId);
     }
 
     return rval;
@@ -1398,10 +1550,61 @@ devredir_setattr_for_entry(struct state_setattr *fusep, tui32 device_id,
                   device_id, irp->pathname);
 
         rval = devredir_send_drive_create_request(device_id,
-                irp->pathname,
-                DesiredAccess, CreateOptions,
-                0, CreateDisposition,
-                irp->CompletionId);
+               irp->pathname,
+               DesiredAccess, CreateOptions,
+               0, CreateDisposition,
+               irp->CompletionId);
+    }
+
+    return rval;
+}
+
+/**
+ * FUSE calls this function whenever it wants us to run a statfs
+ *
+ * @param fusep     opaque data struct that we just pass back to FUSE when done
+ * @param device_id device_id of the redirected share
+ *
+ * @return 0 on success, -1 on failure
+ *****************************************************************************/
+
+int
+devredir_statfs(struct state_statfs *fusep, tui32 device_id, const char *path)
+{
+    tui32  DesiredAccess;
+    tui32  CreateOptions;
+    tui32  CreateDisposition;
+    int    rval = -1;
+    IRP   *irp;
+
+    LOG_DEVEL(LOG_LEVEL_DEBUG, "fusep=%p", fusep);
+
+    if ((irp = devredir_irp_with_pathname_new(path)) != NULL)
+    {
+        /* convert / to windows compatible \ */
+        devredir_cvt_slash(irp->pathname);
+
+        /*
+         * Allocate an IRP to open the file, read the filesystem size
+         * attributes and then close the file
+         */
+        irp->CompletionId = g_completion_id++;
+        irp->completion_type = CID_STATFS;
+        irp->DeviceId = device_id;
+        irp->fuse_info = fusep;
+
+        DesiredAccess = DA_SYNCHRONIZE;
+        CreateOptions = 0;
+        CreateDisposition = CD_FILE_OPEN;
+
+        LOG_DEVEL(LOG_LEVEL_DEBUG, "statfs for device_id=%d CompletionId=%d",
+                  device_id, irp->CompletionId);
+
+        rval = devredir_send_drive_create_request(device_id,
+               irp->pathname,
+               DesiredAccess, CreateOptions,
+               0, CreateDisposition,
+               irp->CompletionId);
     }
 
     return rval;
@@ -1450,10 +1653,10 @@ devredir_file_create(struct state_create *fusep, tui32 device_id,
         CreateDisposition  = 0x02; /* got this value from windows */
 
         rval = devredir_send_drive_create_request(device_id, path,
-                DesiredAccess, CreateOptions,
-                FileAttributes,
-                CreateDisposition,
-                irp->CompletionId);
+               DesiredAccess, CreateOptions,
+               FileAttributes,
+               CreateDisposition,
+               irp->CompletionId);
     }
 
     return rval;
@@ -1512,10 +1715,10 @@ devredir_file_open(struct state_open *fusep, tui32 device_id,
         CreateDisposition = CD_FILE_OPEN; // WAS 1
 
         rval = devredir_send_drive_create_request(device_id, path,
-                DesiredAccess, CreateOptions,
-                FileAttributes,
-                CreateDisposition,
-                irp->CompletionId);
+               DesiredAccess, CreateOptions,
+               FileAttributes,
+               CreateDisposition,
+               irp->CompletionId);
     }
 
     return rval;
@@ -1592,9 +1795,9 @@ devredir_rmdir_or_file(struct state_remove *fusep, tui32 device_id,
         CreateDisposition = 0x01; /* got this value from windows */
 
         rval = devredir_send_drive_create_request(device_id, path,
-                DesiredAccess, CreateOptions,
-                0, CreateDisposition,
-                irp->CompletionId);
+               DesiredAccess, CreateOptions,
+               0, CreateDisposition,
+               irp->CompletionId);
     }
 
     return rval;
@@ -1770,10 +1973,10 @@ int devredir_file_rename(struct state_rename *fusep, tui32 device_id,
         CreateDisposition = CD_FILE_OPEN; // WAS 1
 
         rval = devredir_send_drive_create_request(device_id, old_name,
-                DesiredAccess, CreateOptions,
-                FileAttributes,
-                CreateDisposition,
-                irp->CompletionId);
+               DesiredAccess, CreateOptions,
+               FileAttributes,
+               CreateDisposition,
+               irp->CompletionId);
     }
 
     return rval;
@@ -1819,69 +2022,6 @@ devredir_cvt_slash(char *path)
         }
         cptr++;
     }
-}
-
-static void
-devredir_cvt_to_unicode(char *unicode, const char *path)
-{
-    char *dest;
-    char *src;
-    int   rv;
-    int   i;
-
-    rv = g_mbstowcs((twchar *) unicode, path, strlen(path));
-
-    /* unicode is typically 4 bytes, but microsoft only uses 2 bytes */
-
-    src  = unicode + sizeof(twchar); /* skip 1st unicode char        */
-    dest = unicode + 2;              /* first char already in  place */
-
-    for (i = 1; i < rv; i++)
-    {
-        *dest++ = *src++;
-        *dest++ = *src++;
-        src += 2;
-    }
-
-    *dest++ = 0;
-    *dest++ = 0;
-}
-
-static void
-devredir_cvt_from_unicode_len(char *path, char *unicode, int len)
-{
-    char *dest;
-    char *dest_saved;
-    char *src;
-    int   i;
-    int   bytes_to_alloc;
-    int   max_bytes;
-
-    bytes_to_alloc = (((len / 2) * sizeof(twchar)) + sizeof(twchar));
-
-    src = unicode;
-    dest = g_new0(char, bytes_to_alloc);
-    dest_saved = dest;
-
-    for (i = 0; i < len; i += 2)
-    {
-        *dest++ = *src++;
-        *dest++ = *src++;
-        dest += 2;
-    }
-    *dest++ = 0;
-    *dest++ = 0;
-    *dest++ = 0;
-    *dest++ = 0;
-
-    max_bytes = wcstombs(NULL, (wchar_t *) dest_saved, 0);
-    if (max_bytes > 0)
-    {
-        wcstombs(path, (wchar_t *) dest_saved, max_bytes);
-        path[max_bytes] = 0;
-    }
-
-    g_free(dest_saved);
 }
 
 static int
@@ -1947,13 +2087,21 @@ devredir_proc_cid_rmdir_or_file_resp(IRP *irp, enum NTSTATUS IoStatus)
                                       IRP_MJ_CLOSE, IRP_MN_NONE, 32);
 }
 
+/**
+ * Rename a file on response to the create drive request
+ *
+ * See :-
+ * - [MS-RDPEFS] 2.2.3.3.9 (DR_DRIVE_SET_INFORMATION_REQ)`
+ * - [MS-RDPEFS] 2.2.3.3.9.1 (RDP_FILE_RENAME_INFORMATION)
+ *****************************************************************************/
 static void
 devredir_proc_cid_rename_file(IRP *irp, enum NTSTATUS IoStatus)
 {
     struct stream *s;
     int            bytes;
-    int            sblen; /* SetBuffer length */
-    int            flen;  /* FileNameLength   */
+    unsigned int   flen;  /* FileNameLength */
+    unsigned int   unicode_byte_count; /* Bytes to represent new name in UTF-16 */
+    unsigned int   sblen; /* SetBuffer length */
 
 
     if (IoStatus != STATUS_SUCCESS)
@@ -1966,12 +2114,13 @@ devredir_proc_cid_rename_file(IRP *irp, enum NTSTATUS IoStatus)
         return;
     }
 
-    /* Path in unicode needs this much space */
-    flen = ((g_mbstowcs(NULL, irp->gen.rename.new_name, 0)
-             * sizeof(twchar)) / 2) + 2;
-    sblen = 6 + flen;
+    /* Find number of words required for Unicode path */
+    flen = strlen(irp->gen.rename.new_name) + 1; // includes terminator
+    unicode_byte_count = utf8_as_utf16_word_count(irp->gen.rename.new_name, flen) * 2;
+    /* Length of RDP_FILE_RENAME_INFORMATION struct */
+    sblen = (1 + 1 + 4) + unicode_byte_count;
 
-    xstream_new(s, 1024 + flen);
+    xstream_new(s, (int)(64 + unicode_byte_count));
 
     irp->completion_type = CID_RENAME_FILE_RESP;
     devredir_insert_DeviceIoRequest(s, irp->DeviceId, irp->FileId,
@@ -1983,11 +2132,9 @@ devredir_proc_cid_rename_file(IRP *irp, enum NTSTATUS IoStatus)
     xstream_seek(s, 24);             /* padding                       */
     xstream_wr_u8(s, 1);             /* ReplaceIfExists               */
     xstream_wr_u8(s, 0);             /* RootDirectory                 */
-    xstream_wr_u32_le(s, flen);      /* FileNameLength                */
-
-    /* filename in unicode */
-    devredir_cvt_to_unicode(s->p, irp->gen.rename.new_name); /* UNICODE_TODO */
-    xstream_seek(s, flen);
+    xstream_wr_u32_le(s, unicode_byte_count); /* FileNameLength       */
+    /* filename in Unicode */
+    out_utf8_as_utf16_le(s, irp->gen.rename.new_name, flen);
 
     /* send to client */
     bytes = xstream_len(s);
@@ -2166,7 +2313,7 @@ devredir_proc_cid_lookup(IRP *irp,
                     LOG_DEVEL(LOG_LEVEL_ERROR, "Expected FILE_BASIC_INFORMATION length"
                               "%d, got len=%d",
                               FILE_BASIC_INFORMATION_SIZE, Length);
-                    IoStatus = STATUS_UNSUCCESSFUL;
+                    IoStatus = STATUS_INFO_LENGTH_MISMATCH;
                     lookup_done(irp, IoStatus);
                 }
                 else
@@ -2185,7 +2332,7 @@ devredir_proc_cid_lookup(IRP *irp,
                     LOG_DEVEL(LOG_LEVEL_ERROR, "Expected FILE_STD_INFORMATION length"
                               "%d, got len=%d",
                               FILE_STD_INFORMATION_SIZE, Length);
-                    IoStatus = STATUS_UNSUCCESSFUL;
+                    IoStatus = STATUS_INFO_LENGTH_MISMATCH;
                 }
                 else
                 {
@@ -2197,6 +2344,128 @@ devredir_proc_cid_lookup(IRP *irp,
     }
 }
 
+
+/*****************************************************************************/
+static void
+devredir_proc_cid_statfs(IRP *irp,
+                         struct stream *s_in,
+                         enum NTSTATUS IoStatus)
+{
+    struct stream *s;
+    int            bytes;
+    char size_info_struct[FILE_FS_FULL_SIZE_INFORMATION_SIZE] = {0};
+
+    if (IoStatus != STATUS_SUCCESS)
+    {
+        struct statvfs fss = {0};
+        LOG_DEVEL(LOG_LEVEL_DEBUG,
+                  "statfs returned with IoStatus=0x%x", IoStatus);
+
+        xfuse_devredir_cb_statfs((struct state_statfs *)irp->fuse_info,
+                                 &fss,
+                                 IoStatus);
+        devredir_irp_delete(irp);
+        return;
+    }
+
+    xstream_new(s, (int)(64 + sizeof(size_info_struct)));
+
+    irp->completion_type = CID_STATFS_RESP;
+    devredir_insert_DeviceIoRequest(s, irp->DeviceId, irp->FileId,
+                                    irp->CompletionId,
+                                    IRP_MJ_QUERY_VOLUME_INFORMATION,
+                                    IRP_MN_NONE);
+
+    xstream_wr_u32_le(s, FileFsFullSizeInformation);
+    xstream_wr_u32_le(s, sizeof(size_info_struct));
+    /* number of bytes after padding */
+    xstream_seek(s, 24);             /* padding                       */
+    xstream_copyin(s, size_info_struct, sizeof(size_info_struct));
+    /* Queried structure             */
+
+    /* send to client */
+    bytes = xstream_len(s);
+    send_channel_data(g_rdpdr_chan_id, s->data, bytes);
+    xstream_free(s);
+}
+
+/* [MS-RDPEFS] 2.2.3.4.6 */
+static void
+devredir_proc_cid_statfs_resp(IRP *irp,
+                              struct stream *s_in,
+                              enum NTSTATUS IoStatus)
+{
+    struct statvfs fss = {0};
+    tui32 Length;
+    if (IoStatus == STATUS_SUCCESS)
+    {
+        xstream_rd_u32_le(s_in, Length);
+        if (Length != FILE_FS_FULL_SIZE_INFORMATION_SIZE)
+        {
+            LOG_DEVEL(LOG_LEVEL_ERROR,
+                      "Expected FILE_FS_FULL_SIZE_INFORMATION_SIZE length"
+                      " %d, got len=%d",
+                      FILE_FS_FULL_SIZE_INFORMATION_SIZE, Length);
+            IoStatus = STATUS_INFO_LENGTH_MISMATCH;
+        }
+        else
+        {
+            tui64 TotalAllocationUnits;
+            tui64 CallerAvailableAllocationUnits;
+            tui64 ActualAvailableAllocationUnits;
+            tui32 SectorsPerAllocationUnit;
+            tui32 BytesPerSector;
+            unsigned int block_size;
+
+            xstream_rd_u64_le(s_in, TotalAllocationUnits);
+            xstream_rd_u64_le(s_in, CallerAvailableAllocationUnits);
+            xstream_rd_u64_le(s_in, ActualAvailableAllocationUnits);
+            xstream_rd_u32_le(s_in, SectorsPerAllocationUnit);
+            xstream_rd_u32_le(s_in, BytesPerSector);
+
+            block_size = SectorsPerAllocationUnit * BytesPerSector;
+            if (block_size < 512 ||  block_size > 131072)
+            {
+                LOG(LOG_LEVEL_ERROR,
+                    "Unreasonable block size for file system : %u",
+                    block_size);
+            }
+            else
+            {
+                fss.f_bsize = block_size;
+                fss.f_frsize = block_size;
+                fss.f_blocks = TotalAllocationUnits;
+                fss.f_bfree = ActualAvailableAllocationUnits;
+                fss.f_bavail = CallerAvailableAllocationUnits;
+                // Following values do not seem to be needed by
+                // any applications. btrfs also returns 0 for these
+                //fss.f_files = ???;
+                //fss.f_ffree = ???;
+                //fss.f_favail = fss.f_ffree;
+                // Chromium 130 needs this set, or the user can't save
+                // to our filesystem
+                fss.f_namemax = XFS_MAXFILENAMELEN;
+            }
+        }
+    }
+    xfuse_devredir_cb_statfs((struct state_statfs *)irp->fuse_info,
+                             &fss, IoStatus);
+
+    if (IoStatus != STATUS_SUCCESS)
+    {
+        devredir_irp_delete(irp);
+    }
+    else
+    {
+        irp->completion_type = CID_CLOSE;
+        devredir_send_drive_close_request(RDPDR_CTYP_CORE,
+                                          PAKID_CORE_DEVICE_IOREQUEST,
+                                          irp->DeviceId,
+                                          irp->FileId,
+                                          irp->CompletionId,
+                                          IRP_MJ_CLOSE, IRP_MN_NONE, 32);
+    }
+}
 
 /*
  * Re-uses the specified IRP to issue a request to set basic file attributes

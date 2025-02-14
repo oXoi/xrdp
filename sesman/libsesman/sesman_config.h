@@ -31,6 +31,8 @@
 #include "list.h"
 #include "log.h"
 
+#include "xrdp_sockets.h"
+
 enum SESMAN_CFG_SESS_POLICY_BITS
 {
     /* If these two are set, they override everything else */
@@ -70,14 +72,12 @@ struct config_security
      * @var ts_users
      * @brief Terminal Server Users group
      */
-    int ts_users_enable;
-    int ts_users;
+    char *ts_users;
     /**
      * @var ts_admins
      * @brief Terminal Server Administrators group
      */
-    int ts_admins_enable;
-    int ts_admins;
+    char *ts_admins;
     /**
      * @var ts_always_group_check
      * @brief if the Groups are not found deny access
@@ -109,6 +109,12 @@ struct config_security
      * @brief if the Xorg X11 server should be started with no_new_privs (Linux only)
      */
     int xorg_no_new_privileges;
+
+    /*
+     * @var session_sockdir_group
+     * @brief Group to have read access to the session sockdirs
+     */
+    char *session_sockdir_group;
 };
 
 /**
@@ -178,7 +184,7 @@ struct config_sesman
      * @var listen_port
      * @brief Listening port
      */
-    char listen_port[256];
+    char listen_port[XRDP_SOCKETS_MAXPATH];
     /**
      * @var enable_user_wm
      * @brief Flag that enables user specific wm

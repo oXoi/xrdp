@@ -155,13 +155,13 @@ x_server_running_check_ports(int display)
     int x_running;
     int sck;
 
-    g_sprintf(text, "/tmp/.X11-unix/X%d", display);
+    g_snprintf(text, sizeof(text), X11_UNIX_SOCKET_STR, display);
     x_running = g_file_exist(text);
 
     if (!x_running)
     {
         LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
-        g_sprintf(text, "/tmp/.X%d-lock", display);
+        g_snprintf(text, sizeof(text), "/tmp/.X%d-lock", display);
         x_running = g_file_exist(text);
     }
 
@@ -170,7 +170,7 @@ x_server_running_check_ports(int display)
         LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
         if ((sck = g_tcp_socket()) != -1)
         {
-            g_sprintf(text, "59%2.2d", display);
+            g_snprintf(text, sizeof(text), "59%2.2d", display);
             x_running = g_tcp_bind(sck, text);
             g_tcp_close(sck);
         }
@@ -181,7 +181,7 @@ x_server_running_check_ports(int display)
         LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
         if ((sck = g_tcp_socket()) != -1)
         {
-            g_sprintf(text, "60%2.2d", display);
+            g_snprintf(text, sizeof(text), "60%2.2d", display);
             x_running = g_tcp_bind(sck, text);
             g_tcp_close(sck);
         }
@@ -192,45 +192,10 @@ x_server_running_check_ports(int display)
         LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
         if ((sck = g_tcp_socket()) != -1)
         {
-            g_sprintf(text, "62%2.2d", display);
+            g_snprintf(text, sizeof(text), "62%2.2d", display);
             x_running = g_tcp_bind(sck, text);
             g_tcp_close(sck);
         }
-    }
-
-    if (!x_running)
-    {
-        LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
-        g_sprintf(text, XRDP_CHANSRV_STR, display);
-        x_running = g_file_exist(text);
-    }
-
-    if (!x_running)
-    {
-        LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
-        g_sprintf(text, CHANSRV_PORT_OUT_STR, display);
-        x_running = g_file_exist(text);
-    }
-
-    if (!x_running)
-    {
-        LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
-        g_sprintf(text, CHANSRV_PORT_IN_STR, display);
-        x_running = g_file_exist(text);
-    }
-
-    if (!x_running)
-    {
-        LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
-        g_sprintf(text, CHANSRV_API_STR, display);
-        x_running = g_file_exist(text);
-    }
-
-    if (!x_running)
-    {
-        LOG(LOG_LEVEL_DEBUG, "Did not find a running X server at %s", text);
-        g_sprintf(text, XRDP_X11RDP_STR, display);
-        x_running = g_file_exist(text);
     }
 
     if (x_running)
@@ -244,9 +209,12 @@ x_server_running_check_ports(int display)
 /******************************************************************************/
 /* Helper function for get_sorted_display_list():qsort() */
 static int
-icmp(const void *i1, const void *i2)
+icmp(const void *v1, const void *v2)
 {
-    return *(const unsigned int *)i2 - *(const unsigned int *)i1;
+    // Pointers point to unsigned ints
+    unsigned int i1 = *(unsigned int *)v1;
+    unsigned int i2 = *(unsigned int *)v2;
+    return (i1 < i2) ? -1 : (i1 > i2) ? 1 : 0;
 }
 
 /******************************************************************************/
@@ -560,9 +528,9 @@ session_list_get_wait_objs(tbus robjs[], int *robjs_count)
 int
 session_list_check_wait_objs(void)
 {
-    int i;
+    int i = 0;
 
-    for (i = 0 ; i < g_session_list->count; ++i)
+    while (i < g_session_list->count)
     {
         struct session_item *si;
         si = (struct session_item *)list_get_item(g_session_list, i);
